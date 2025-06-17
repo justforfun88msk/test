@@ -35,7 +35,7 @@ st.write("### Нарисуйте план этажа")
 canvas_result = st_canvas(
     stroke_width=2,
     stroke_color="black",
-    fill_color="rgba(255, 165, 0, 0.3)",  # полигон будет полупрозрачным
+    fill_color="rgba(255, 165, 0, 0.3)",
     background_color="#EEE",
     drawing_mode="polygon",
     key="canvas",
@@ -43,9 +43,9 @@ canvas_result = st_canvas(
     height=600,
 )
 
-# ——— Утилиты для работы с Shapely ———
+# ——— Функции для работы с Shapely ———
 def get_shapely_polygons(data):
-    """Из JSON Canvas возвращает список Shapely‑полигонов."""
+    """Из JSON Canvas возвращает список Shapely-полигонов."""
     objs = data.get("objects", [])
     polys = []
     for o in objs:
@@ -56,15 +56,10 @@ def get_shapely_polygons(data):
     return polys
 
 def split_polygon_at_area(polygon: Polygon, target_px2: float, tol=1e-2):
-    """
-    Разбивает polygon на две части: 
-    первая ~target_px2 по площади, вторая — остаток.
-    Метод: бинарный поиск линии разреза вдоль главной оси минимального
-    вращенного прямоугольника.
-    """
+    """Разбивает polygon на часть близкую к target_px2 по площади и остаток."""
+    # минимальный повёрнутый прямоугольник и его главная ось
     mrr = polygon.minimum_rotated_rectangle
     coords = list(mrr.exterior.coords)
-    # находим самую длинную сторону -> главная ось
     max_len = 0
     for i in range(len(coords)-1):
         x1,y1 = coords[i]; x2,y2 = coords[i+1]
@@ -75,7 +70,7 @@ def split_polygon_at_area(polygon: Polygon, target_px2: float, tol=1e-2):
     (x1,y1),(x2,y2) = major
     ux, uy = (x2-x1)/max_len, (y2-y1)/max_len
 
-    # бинарный поиск по проекции
+    # проекции вершин
     projs = [ux*x + uy*y for x,y in polygon.exterior.coords]
     low, high = min(projs), max(projs)
 
@@ -83,11 +78,12 @@ def split_polygon_at_area(polygon: Polygon, target_px2: float, tol=1e-2):
         mx, my = ux*offset, uy*offset
         vx, vy = -uy, ux
         minx, miny, maxx, maxy = polygon.bounds
-        diag = math.hypot(maxx-minx, maxy-miny)*2
+        diag = math.hypot(maxx-minx, maxy-miny) * 2
         p1 = (mx+vx*diag, my+vy*diag)
         p2 = (mx-vx*diag, my-vy*diag)
         return LineString([p1,p2])
 
+    # бинарный поиск линии разреза
     for _ in range(30):
         mid = (low+high)/2
         line = make_cut(mid)
@@ -95,11 +91,11 @@ def split_polygon_at_area(polygon: Polygon, target_px2: float, tol=1e-2):
         if len(parts) < 2:
             low = mid
             continue
-        # выбираем ту часть, чей центр ближе к low
+        # выбираем меньшую по центру часть
         areas_list = []
         for part in parts:
             cx, cy = part.representative_point().coords[0]
-            proj = ux*cx+uy*cy
+            proj = ux*cx + uy*cy
             areas_list.append((proj, part))
         smaller = min(areas_list, key=lambda x: x[0])[1]
         a = smaller.area
@@ -108,19 +104,16 @@ def split_polygon_at_area(polygon: Polygon, target_px2: float, tol=1e-2):
         elif a < target_px2*(1-tol):
             low = mid
         else:
-            others = [p for p in parts if not p.equals(smaller)]
-            return smaller, (others[0] if others else None)
+            rem = [p for p in parts if not p.equals(smaller)]
+            return smaller, (rem[0] if rem else None)
+
     # fallback
     parts = split(polygon, make_cut((low+high)/2))
     parts = sorted(parts, key=lambda p: p.area)
     return parts[0], (parts[1] if len(parts)>1 else None)
 
 def layout_floor(floor_poly: Polygon):
-    """
-    Режем floor_poly на участки под квартиры.
-    Сначала рассчитываем список (тип, target_px2), 
-    затем последовательно режем самый большой кусок.
-    """
+    """Разметка этажа на участки под квартиры."""
     total_m2 = floor_poly.area * scale**2 / 1e6
     targets = []
     for t, pct in percentages.items():
@@ -130,10 +123,8 @@ def layout_floor(floor_poly: Polygon):
         avg = (mn+mx)/2
         count = max(1, int(round(area_m2/avg)))
         for _ in range(count):
-            # переводим m2 → пикселей²
-            px2 = area_m2*1e6/scale**2/count
+            px2 = (area_m2/count)*1e6/scale**2
             targets.append((t, px2))
-    # сортируем по убыванию
     targets.sort(key=lambda x: x[1], reverse=True)
 
     available = [floor_poly]
@@ -141,7 +132,7 @@ def layout_floor(floor_poly: Polygon):
     for t, px2 in targets:
         available.sort(key=lambda p: p.area, reverse=True)
         poly = available.pop(0)
-        if abs(poly.area - px2)/px2 < 0.01:
+        if abs(poly.area - px2)/px2 < 0.02:
             apt, rem = poly, None
         else:
             apt, rem = split_polygon_at_area(poly, px2)
@@ -150,23 +141,22 @@ def layout_floor(floor_poly: Polygon):
             available.append(rem)
     return apartments
 
-# ——— Кнопка “Подобрать квартирографию” ———
+# ——— Кнопка запуска ———
 if st.button("Подобрать квартирографию"):
     data = canvas_result.json_data
     if not data or not data.get("objects"):
-        st.error("Пожалуйста, нарисуйте план (внешний контур и, опционально, МОП).")
+        st.error("Нарисуйте сначала внешний контур, затем (опционально) МОПы.")
     else:
         polys = get_shapely_polygons(data)
-        if len(polys) < 1:
-            st.error("Не найден внешний контур.")
+        if not polys:
+            st.error("Не найден валидный полиго\n")
         else:
-            # первый полигон — контур, остальные — отверстия
             floor = polys[0]
             for hole in polys[1:]:
                 floor = floor.difference(hole)
             apartments = layout_floor(floor)
 
-            # ——— Визуализация результата ———
+            # Визуализация
             fig, ax = plt.subplots()
             cmap = {
                 "studio":"#FFC107","1BR":"#8BC34A",
@@ -178,15 +168,15 @@ if st.button("Подобрать квартирографию"):
             ax.set_aspect("equal"); ax.axis("off")
             st.pyplot(fig)
 
-            # ——— Итоги по количеству ———
+            # Итоги
             counts = {}
             for t, _ in apartments:
                 counts[t] = counts.get(t, 0) + 1
-            st.markdown("### Результат расчёта")
+            st.markdown("### Результат")
             st.write(f"- Этажей в доме: **{floors}**")
             st.write("- Квартир на этаже:")
             for t, cnt in counts.items():
                 st.write(f"  - {t}: {cnt}")
             st.write("- Всего квартир в доме:")
             for t, cnt in counts.items():
-                st.write(f"  - {t}: {cnt * floors}")
+                st.write(f"  - {t * floors}")
