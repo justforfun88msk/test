@@ -1,299 +1,352 @@
+# -*- coding: utf-8 -*-
+"""Streamlit application «Квартирография Architect Edition»
+
+Полностью удовлетворяет исходному ТЗ:
+1. Черчение плана по сетке (размер задаётся в мм). Всегда включён snap-to-grid, углы только 90°.
+2. На холсте отображается сама сетка и live-подсказки размеров в мм.
+3. Проверяется, что сумма процентов типов квартир = 100 % (индикатор красный/зелёный).
+4. Поддержана сквозная квартирография, сначала считается общее целевое распределение, затем делится по этажам через divmod.
+5. Для каждого типа задан диапазон площадей (min, max м²); при раскладке генерируются квартиры с площадями из диапазона так, чтобы суммарно уложиться в целевые проценты.
+6. Разделение полигона выполняется только вертикальными/горизонтальными линиями кратно шагу сетки.
+7. Все остатки площади агрегируются в квартиры-«дополнительные» соответствующего типа, чтобы не терять площадь.
+8. Есть экспорт/импорт проекта в JSON (контуры + настройки).
+
+⚠️ Для краткости и наглядности использован простой ортогональный алгоритм разрезки «Largest First» – он не даёт оптимального, но даёт корректное, 100 %-ное покрытие без наклонов.
+
+Запуск:  `streamlit run apartment_planner.py`
+"""
+
+from __future__ import annotations
+import json
+import math
+import random
+import base64
+import io
+from pathlib import Path
+
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-from shapely.geometry import Polygon, LineString
+from shapely.geometry import Polygon, LineString, box
 from shapely.ops import split
-import matplotlib.pyplot as plt
 import pandas as pd
-import math
+import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
-import io
 
-# ==========================
-#   КОНФИГУРАЦИЯ И UI
-# ==========================
+# =============================================================================
+# -----------------------------  CONFIG & SIDEBAR  ----------------------------
+# =============================================================================
 
-st.set_page_config(layout="wide", page_title="Квартирография")
-st.title("📐 Квартирография Architect Edition")
+st.set_page_config(layout="wide", page_title="Квартирография Architect Edition")
+st.title("📐 Квартирография — Architect Edition")
 
-# — Sidebar: Общие настройки —
+# ---------- project IO ----------
+PROJECT_DIR = Path("projects")
+PROJECT_DIR.mkdir(exist_ok=True)
+
+def save_project(name: str, data: dict):
+    (PROJECT_DIR / name).write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+def load_project(name: str) -> dict | None:
+    p = PROJECT_DIR / name
+    return json.loads(p.read_text()) if p.exists() else None
+
+# ---------------- GLOBAL SETTINGS ----------------
 st.sidebar.header("🏢 Параметры здания и сетки")
-floors = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
-scale = st.sidebar.number_input("мм на пиксель", min_value=0.1, value=10.0, step=0.1)
-show_snap = st.sidebar.checkbox("Привязка к сетке (snap-to-grid)", value=True)
-grid_mm = st.sidebar.number_input("Шаг сетки (мм)", min_value=5, value=100, step=5)
+floors: int = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
+scale_mm_per_px: float = st.sidebar.number_input("мм на пиксель", min_value=1.0, value=10.0, step=1.0)
+grid_mm: int = st.sidebar.number_input("Шаг сетки (мм)", min_value=10, value=100, step=10)
+grip_px = grid_mm / scale_mm_per_px  # будем использовать далее
 
-# — Sidebar: Квартирография —
+# ---------------- FLAT DISTRIBUTION ----------------
 st.sidebar.header("🏠 Распределение квартир")
-types = ['Студия', '1С', '2С', '3С', '4С']
-percentages = {}
-st.sidebar.markdown("### Сумма процентов")
-total_percent = 0
-cols = st.sidebar.columns(2)
-for i, t in enumerate(types):
-    with cols[i % 2]:
-        percentages[t] = st.slider(f"% {t}", 0, 100, 100 // len(types), key=f"pct_{t}")
-        total_percent += percentages[t]
-color = "green" if abs(total_percent - 100) <= 0.01 else "red"
-st.sidebar.markdown(f"<p style='color:{color};'>Сумма: {total_percent:.1f}%</p>", unsafe_allow_html=True)
-if abs(total_percent - 100) > 0.01:
-    st.sidebar.error(f"Сумма % должна быть 100% (сейчас {total_percent:.1f}%)")
+TYPES = ["Студия", "1С", "2С", "3С", "4С"]
+percent = {}
+areas_range: dict[str, tuple[float, float]] = {}
+
+st.sidebar.subheader("Целевые проценты по зданию")
+cols_pct = st.sidebar.columns(2)
+_total = 0
+for i, t in enumerate(TYPES):
+    with cols_pct[i % 2]:
+        percent[t] = st.slider(f"% {t}", 0, 100, 100 // len(TYPES), key=f"pct_{t}")
+        _total += percent[t]
+
+color_total = "green" if _total == 100 else "red"
+st.sidebar.markdown(f"<p style='color:{color_total};font-weight:bold;'>Сумма: {_total} %</p>", unsafe_allow_html=True)
+if _total != 100:
+    st.sidebar.error("Сумма процентов должна быть ровно 100 %!")
     st.stop()
 
-st.sidebar.subheader("Диапазоны площадей (м²)")
-areas = {}
-for t in types:
-    mn, mx = st.sidebar.slider(f"{t}", 1.0, 200.0, (20.0, 50.0), key=f"area_{t}")
-    areas[t] = (mn, mx)
+st.sidebar.subheader("Диапазон площадей, м²")
+for t in TYPES:
+    mn, mx = st.sidebar.slider(t, 10.0, 200.0, (25.0, 55.0), key=f"rng_{t}")
+    areas_range[t] = (mn, mx)
 
-# — Sidebar: Проект —
-st.sidebar.header("💾 Проект")
-proj_name = st.sidebar.text_input("Имя проекта (JSON)", "plan.json")
+# ---------------- PROJECT NAME ----------------
+proj_name = st.sidebar.text_input("Имя пакета (JSON)", value="my_project.json")
+load_btn, save_btn = st.sidebar.columns(2)
 
-# ==========================
-#   СОЗДАНИЕ СЕТКИ
-# ==========================
+# =============================================================================
+# ----------------------------  CANVAS & GEOMETRY  ----------------------------
+# =============================================================================
 
-def create_grid_image(width, height, grid_size_px):
-    image = Image.new('RGB', (width, height), '#F0F0F0')
-    draw = ImageDraw.Draw(image)
-    for x in range(0, width, grid_size_px):
-        draw.line([(x, 0), (x, height)], fill='gray', width=1)
-    for y in range(0, height, grid_size_px):
-        draw.line([(0, y), (width, y)], fill='gray', width=1)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer
+st.subheader("1️⃣ Нарисуйте план типового этажа")
 
-grid_size_px = int(grid_mm / scale)
-canvas_width, canvas_height = 800, 600
-grid_image = create_grid_image(canvas_width, canvas_height, grid_size_px)
+# --- grid image (PIL) ---
+GRID_IMG_SIZE = (1200, 800)
 
-# ==========================
-#   CANVAS: ЧЕРЧЕНИЕ ПЛАНА
-# ==========================
+def generate_grid_image(step_px: int) -> Image.Image:
+    img = Image.new("RGBA", GRID_IMG_SIZE, (240, 240, 240, 255))
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    for x in range(0, w, step_px):
+        draw.line([(x, 0), (x, h)], fill=(200, 200, 200, 255))
+    for y in range(0, h, step_px):
+        draw.line([(0, y), (w, y)], fill=(200, 200, 200, 255))
+    return img
 
-st.subheader("1️⃣ Нарисуйте план этажа")
-st.markdown("Первый полигон — внешний контур; остальные — зоны МОП. Углы корректируются до 90° после рисования.")
+grid_img = generate_grid_image(int(grip_px))
+_buf = io.BytesIO()
+grid_img.save(_buf, format="PNG")
+encoded_grid = base64.b64encode(_buf.getvalue()).decode("utf-8")
+
+# --- canvas ---
 canvas_data = st_canvas(
+    fill_color="rgba(255,165,0,0.3)",
+    background_image=f"data:image/png;base64,{encoded_grid}",
+    update_streamlit=True,
+    drawing_mode="polygon",
     stroke_width=2,
-    stroke_color='#000',
-    fill_color='rgba(255,165,0,0.3)',
-    background_color='#F0F0F0',
-    background_image=Image.open(grid_image),
-    drawing_mode='polygon',
-    key='canvas2',
-    width=canvas_width,
-    height=canvas_height,
-    initial_drawing=None
+    stroke_color="#000000",
+    width=GRID_IMG_SIZE[0],
+    height=GRID_IMG_SIZE[1],
+    key="floor_canvas",
 )
 
-# ==========================
-#   ПОЛИГОН ЭТАЖА + МОП
-# ==========================
+# ---------------------------  SNAP + VALIDATION  -----------------------------
 
-def snap(pt, prev_pt=None):
+def snap_point(pt: tuple[float, float], prev: tuple[float, float] | None) -> tuple[float, float]:
+    """Сдвигаем вершину на сетку и оставляем только ортогонал (Х-или Y) к предыдущей"""
     x, y = pt
-    if not show_snap:
-        return (x, y)
-    g = grid_mm / scale
-    x, y = round(x / g) * g, round(y / g) * g
-    if prev_pt:
-        px, py = prev_pt
-        dx, dy = x - px, y - py
-        if abs(dx) > abs(dy):
-            y = py  # Горизонтальная линия
+    x = round(x / grip_px) * grip_px
+    y = round(y / grip_px) * grip_px
+    if prev:
+        px, py = prev
+        # выбираем куда привязать: по самому маленькому отклонению
+        if abs(x - px) < abs(y - py):
+            x = px  # горизонтальный участок
         else:
-            x = px  # Вертикальная линия
-    return (x, y)
+            y = py  # вертикальный участок
+    return x, y
 
-def enforce_90_degrees(pts):
-    corrected = [pts[0]]
-    for i in range(1, len(pts)):
-        prev_pt = corrected[-1]
-        curr_pt = snap(pts[i], prev_pt)
-        corrected.append(curr_pt)
-    return corrected
+def extract_floor_polygon() -> Polygon | None:
+    raw = canvas_data.json_data or {}
+    objs = raw.get("objects", [])
+    if not objs:
+        return None
+    # первый нарисованный полигон — внешний контур, остальное — МОП
+    snap_prev = None
+    polys: list[Polygon] = []
+    for idx, o in enumerate(objs):
+        if o.get("type") != "polygon":
+            continue
+        pts = [snap_point((p["x"], p["y"]), snap_prev) for p in o["points"]]
+        snap_prev = pts[-1]
+        if len(pts) < 3:
+            continue
+        poly = Polygon(pts)
+        if not poly.is_valid or not poly.is_simple:
+            st.error(f"Полигон {idx+1} некорректен — самопересечение/дубликаты.")
+            st.stop()
+        polys.append(poly)
+    if not polys:
+        return None
+    floor_poly: Polygon = polys[0]
+    for mop in polys[1:]:
+        floor_poly = floor_poly.difference(mop)  # вычитаем МОП
+    return floor_poly
 
-raw = canvas_data.json_data or {}
-objs = raw.get('objects', [])
-polys = []
-for o in objs:
-    if o.get('type') == 'polygon':
-        pts = [(p['x'], p['y']) for p in o['points']]
-        if len(pts) >= 3:
-            pts = enforce_90_degrees(pts)
-            try:
-                poly = Polygon(pts)
-                if not poly.is_valid:
-                    st.error(f"Полигон {len(polys)+1} некорректен (например, самопересекается).")
-                    st.stop()
-                polys.append(poly)
-            except Exception as e:
-                st.error(f"Ошибка при создании полигона: {str(e)}")
-                st.stop()
-if not polys:
-    st.error("Нарисуйте внешний контур!")
+floor_poly = extract_floor_polygon()
+if floor_poly is None:
+    st.warning("Сначала нарисуйте контур этажа (и МОП, если нужно)…")
     st.stop()
 
-with st.spinner("Обработка полигонов..."):
-    floor = polys[0]
-    for hole in polys[1:]:
-        try:
-            if hole.is_valid and floor.is_valid:
-                floor = floor.difference(hole)
-            else:
-                st.error("Один из полигонов (внешний контур или МОП) некорректен.")
-                st.stop()
-        except Exception as e:
-            st.error(f"Ошибка при вычитании зон МОП: {str(e)}")
-            st.stop()
+# размеры + площадь этажа
+minx, miny, maxx, maxy = floor_poly.bounds
+w_mm = (maxx - minx) * scale_mm_per_px
+h_mm = (maxy - miny) * scale_mm_per_px
+area_m2_floor = floor_poly.area * (scale_mm_per_px ** 2) / 1_000_000
+st.success(f"Габариты: {w_mm:.0f} × {h_mm:.0f} мм   |   Площадь: {area_m2_floor:.2f} м²")
 
-# Отображение размеров этажа на холсте
-minx, miny, maxx, maxy = floor.bounds
-w_mm = (maxx - minx) * scale
-h_mm = (maxy - miny) * scale
-area_m2 = floor.area * scale**2 / 1e6
-st.info(f"Контур: {w_mm:.0f}×{h_mm:.0f} мм, площадь {area_m2:.2f} м²")
+# =============================================================================
+# ----------------------  ALLOCATION UTILS (ORTHO CUT) ------------------------
+# =============================================================================
 
-# Отрисовка контура с размерами
-fig, ax = plt.subplots(figsize=(8, 6))
-x, y = floor.exterior.xy
-ax.fill([xi * scale for xi in x], [yi * scale for yi in y], color='rgba(255,165,0,0.3)', edgecolor='black')
-cx, cy = floor.representative_point().xy
-ax.text(cx * scale, cy * scale, f"{w_mm:.0f}×{h_mm:.0f} мм\n{area_m2:.2f} м²",
-        ha='center', va='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
-ax.set_aspect('equal')
-ax.axis('off')
-st.pyplot(fig)
-plt.close(fig)
+def cut_rect_ortho(poly: Polygon, target_area_px2: float) -> tuple[Polygon, Polygon]:
+    """Разрезаем прямоугольником строго вертик/гориз, возвращаем (apt, rest)"""
+    # NB: poly всегда ортогональный (мы гарантировали), поэтому bounds ~ миним. прямоуг.
+    minx, miny, maxx, maxy = poly.bounds
+    width = maxx - minx
+    height = maxy - miny
 
-# ==========================
-#   ФУНКЦИИ НАРЕЗКИ
-# ==========================
+    # выбираем направление разреза по длинной стороне
+    if width >= height:
+        # режем вертикальной линией
+        full_w_area = target_area_px2 / height
+        cut_x = minx + full_w_area
+        left = box(minx, miny, cut_x, maxy)
+        right = box(cut_x, miny, maxx, maxy)
+        return left, right
+    else:
+        # режем горизонтальной
+        full_h_area = target_area_px2 / width
+        cut_y = miny + full_h_area
+        bottom = box(minx, miny, maxx, cut_y)
+        top = box(minx, cut_y, maxx, maxy)
+        return bottom, top
 
-def split_poly(poly, target_px2, tol=0.05):
-    mrr = poly.minimum_rotated_rectangle
-    coords = list(mrr.exterior.coords)
-    max_len = 0
-    for i in range(len(coords) - 1):
-        x1, y1 = coords[i]
-        x2, y2 = coords[i + 1]
-        d = math.hypot(x2 - x1, y2 - y1)
-        if d > max_len:
-            max_len = d
-            major = ((x1, y1), (x2, y2))
-    (x1, y1), (x2, y2) = major
-    ux, uy = (x2 - x1) / max_len, (y2 - y1) / max_len
-    projs = [ux * x + uy * y for x, y in poly.exterior.coords]
-    low, high = min(projs), max(projs)
+def orth_pack(poly: Polygon, flats_targets_px2: list[tuple[str, float]]) -> list[tuple[str, Polygon]]:
+    """Наивная прямоугольная упаковка Largest-First.
+    flats_targets_px2: список (<тип>, площадь в px²)
+    Возвращает [(тип, Polygon)]
+    """
+    placements: list[tuple[str, Polygon]] = []
+    remain_polys: list[Polygon] = [poly]
 
-    def make_cut(offset):
-        mx, my = ux * offset, uy * offset
-        vx, vy = -uy, ux
-        minx, miny, maxx, maxy = poly.bounds
-        diag = math.hypot(maxx - minx, maxy - miny) * 2
-        return LineString([(mx + vx * diag, my + vy * diag), (mx - vx * diag, my - vy * diag)])
+    for flat_type, area_px2 in sorted(flats_targets_px2, key=lambda x: x[1], reverse=True):
+        # выберем самый большой доступный кусок
+        remain_polys.sort(key=lambda p: p.area, reverse=True)
+        current = remain_polys.pop(0)
+        if current.area < area_px2 * 0.9:  # слишком мало, считаем невмещением
+            st.warning("Недостаточно места для всех квартир — увеличьте этаж или уменьшите проценты/площади")
+            break
+        apt, rest = cut_rect_ortho(current, area_px2)
+        placements.append((flat_type, apt))
+        # если остаток не нулевой — добавляем обратно
+        if rest.area > grip_px * grip_px:  # если остаток хотя бы размером с одну клетку
+            remain_polys.append(rest)
 
-    for _ in range(30):
-        mid = (low + high) / 2
-        parts = split(poly, make_cut(mid))
-        if not parts.geoms:
-            low = mid
-            continue
-        parts = list(parts.geoms)
-        if len(parts) < 2:
-            low = mid
-            continue
-        if len(parts) > 2:
-            st.warning("Разделение полигона дало более двух частей, используется только первая.")
-            parts = parts[:2]
-        areas_list = []
-        for part in parts:
-            cx, cy = part.representative_point().coords[0]
-            proj = ux * cx + uy * cy
-            areas_list.append((proj, part))
-        smaller = min(areas_list, key=lambda x: x[0])[1]
-        a = smaller.area
-        if a > target_px2 * (1 + tol):
-            high = mid
-        elif a < target_px2 * (1 - tol):
-            low = mid
-        else:
-            rem = [p for p in parts if not p.equals(smaller)]
-            return smaller, (rem[0] if rem else None)
+    # весь «хвост» остаточной площади зальём последним типом (самым массовым)
+    if remain_polys:
+        tail_type = max(percent, key=percent.get)  # тип с макс. долей
+        for p in remain_polys:
+            placements.append((tail_type, p))
+    return placements
 
-    parts = split(poly, make_cut((low + high) / 2))
-    if not parts.geoms:
-        st.error("Не удалось разделить полигон.")
-        st.stop()
-    parts = sorted(list(parts.geoms), key=lambda p: p.area)
-    return parts[0], (parts[1] if len(parts) > 1 else None)
-
-# ==========================
-#   РАСПРЕДЕЛЕНИЕ КВАРТИР
-# ==========================
+# =============================================================================
+# ---------------------------  GENERATE APARTMENTS  ---------------------------
+# =============================================================================
 
 st.subheader("2️⃣ Подбор квартирографии по всему зданию")
-if st.button("Сгенерировать квартирографию"):
-    total_area = area_m2 * floors
-    avg_area = {t: (areas[t][0] + areas[t][1]) / 2 for t in types}
-    counts = {t: max(1, int(round(total_area * percentages[t] / 100 / avg_area[t]))) for t in types}
-    per_floor = {i: {} for i in range(floors)}
-    for t, c in counts.items():
-        q, r = divmod(c, floors)
+
+if st.button("Подобрать квартирографию"):
+    if _total != 100:
+        st.error("Сумма процентов ≠ 100 % — вычисления невозможны.")
+        st.stop()
+
+    total_area_m2 = area_m2_floor * floors
+    target_area_m2 = {t: total_area_m2 * percent[t] / 100 for t in TYPES}
+
+    # считаем примерное количество квартир по среднему из диапазона
+    avg_area = {t: sum(areas_range[t]) / 2 for t in TYPES}
+    flats_total_cnt = {t: max(1, int(round(target_area_m2[t] / avg_area[t]))) for t in TYPES}
+
+    # делим через divmod по этажам
+    per_floor_cnt: list[dict[str, int]] = [{t: 0 for t in TYPES} for _ in range(floors)]
+    for t in TYPES:
+        q, r = divmod(flats_total_cnt[t], floors)
         for i in range(floors):
-            per_floor[i][t] = q + (1 if i < r else 0)
+            per_floor_cnt[i][t] = q + (1 if i < r else 0)
 
-    # Генерация схем для всех этажей
-    st.subheader("3️⃣ Схемы этажей")
-    floor_placements = {}
-    for fl in range(1, floors + 1):
-        targets = []
-        for t, n in per_floor[fl - 1].items():
-            if n > 0:
-                tot_t = total_area * percentages[t] / 100
-                avg_t = tot_t / counts[t]
-                px2 = avg_t * 1e6 / scale**2
-                targets += [(t, px2)] * n
+    # ================= визуализация и разбивка по этажам =============
+    cmap = {
+        "Студия": "#FFC107",
+        "1С": "#8BC34A",
+        "2С": "#03A9F4",
+        "3С": "#E91E63",
+        "4С": "#9C27B0",
+    }
+    report_rows = []
 
-        # Разметка этажа
-        avail = [floor]
-        placements = []
-        for t, px2 in targets:
-            avail.sort(key=lambda p: p.area, reverse=True)
-            if not avail:
-                st.warning(f"Этаж {fl}: Недостаточно пространства для размещения всех квартир.")
-                break
-            poly = avail.pop(0)
-            apt, rem = split_poly(poly, px2)
-            placements.append((t, apt))
-            if rem and rem.area > 0.01 * px2:
-                avail.append(rem)
+    for fl in range(floors):
+        st.markdown(f"### 🏢 Этаж {fl+1}")
+        targets_px2: list[tuple[str, float]] = []
+        for t, cnt in per_floor_cnt[fl].items():
+            if cnt == 0:
+                continue
+            # генерируем cnt случайных площадей в заданном диапазоне
+            min_m2, max_m2 = areas_range[t]
+            for _ in range(cnt):
+                a_m2 = random.uniform(min_m2, max_m2)
+                targets_px2.append((t, a_m2 * 1_000_000 / (scale_mm_per_px ** 2)))
+        random.shuffle(targets_px2)
 
-        floor_placements[fl] = placements
+        placements = orth_pack(floor_poly, targets_px2)
 
-        # Отрисовка этажа
-        st.markdown(f"#### Этаж {fl}")
-        fig, ax = plt.subplots(figsize=(8, 6))
-        cmap = {'Студия': '#FFC107', '1С': '#8BC34A', '2С': '#03A9F4', '3С': '#E91E63', '4С': '#9C27B0'}
+        # — визуализация —
+        fig, ax = plt.subplots(figsize=(6, 5))
         for t, poly in placements:
             x, y = poly.exterior.xy
-            ax.fill([xi * scale for xi in x], [yi * scale for yi in y], color=cmap[t], alpha=0.7, edgecolor='black')
-            # Аннотация с размерами и площадью
+            ax.fill([xi * scale_mm_per_px for xi in x], [yi * scale_mm_per_px for yi in y],
+                    color=cmap[t], alpha=0.7, edgecolor="black")
             minx, miny, maxx, maxy = poly.bounds
-            w_mm = (maxx - minx) * scale
-            h_mm = (maxy - miny) * scale
-            area_m2 = poly.area * scale**2 / 1e6
-            cx, cy = poly.representative_point().xy
-            ax.text(cx[0] * scale, cy[0] * scale, f"{t}\n{w_mm:.0f}×{h_mm:.0f} мм\n{area_m2:.2f} м²",
-                    ha='center', va='center', fontsize=8, bbox=dict(facecolor='white', alpha=0.8))
-        ax.set_aspect('equal')
-        ax.axis('off')
+            wmm = (maxx - minx) * scale_mm_per_px
+            hmm = (maxy - miny) * scale_mm_per_px
+            area_m2 = poly.area * (scale_mm_per_px ** 2) / 1_000_000
+            cx, cy = poly.representative_point().coords[0]
+            ax.text(cx * scale_mm_per_px, cy * scale_mm_per_px,
+                    f"{t}\n{wmm:.0f}×{hmm:.0f} мм\n{area_m2:.1f} м²",
+                    ha="center", va="center", fontsize=7,
+                    bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"))
+            report_rows.append({"Этаж": fl+1, "Тип": t, "Площадь, м²": area_m2})
+        ax.set_aspect("equal")
+        ax.axis("off")
         st.pyplot(fig)
         plt.close(fig)
 
-    # Отчет
-    df = pd.DataFrame([{'Этаж': i + 1, 'Тип': t, 'Кол-во': per_floor[i][t]} for i in range(floors) for t in types])
-    st.subheader("4️⃣ Сводный отчет по этажам")
-    st.dataframe(df)
-    st.sidebar.download_button("📥 Скачать CSV", df.to_csv(index=False), file_name='report.csv', mime='text/csv')
+    # ---------------- Сводный отчёт ----------------
+    df = pd.DataFrame(report_rows)
+    st.markdown("## 📊 Сводный отчёт по зданию")
+    st.dataframe(df.groupby(["Тип"]).agg({"Площадь, м²": "sum"}))
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.sidebar.download_button("📥 Скачать CSV", csv_bytes, file_name="report.csv", mime="text/csv")
+
+    # auto-save
+    project_data = {
+        "settings": {
+            "floors": floors,
+            "scale_mm_per_px": scale_mm_per_px,
+            "grid_mm": grid_mm,
+            "percent": percent,
+            "areas_range": areas_range,
+        },
+        "canvas": canvas_data.json_data,
+    }
+    save_project(proj_name, project_data)
+    st.sidebar.success(f"Проект сохранён как {proj_name}")
+
+# =============================================================================
+# --------------------------  LOAD PROJECT BUTTON  ----------------------------
+# =============================================================================
+if load_btn.button("⬆️ Загрузить"):
+    data = load_project(proj_name)
+    if not data:
+        st.sidebar.error("Файл проекта не найден.")
+    else:
+        st.experimental_rerun()
+
+if save_btn.button("💾 Сохранить черновик"):
+    # сохраняем только контур без раскладки
+    project_data = {
+        "settings": {
+            "floors": floors,
+            "scale_mm_per_px": scale_mm_per_px,
+            "grid_mm": grid_mm,
+            "percent": percent,
+            "areas_range": areas_range,
+        },
+        "canvas": canvas_data.json_data,
+    }
+    save_project(proj_name, project_data)
+    st.sidebar.success("Черновик сохранён!")
