@@ -1,5 +1,6 @@
-streamlit 
-streamlit-drawable-canvas 
-shapely 
-matplotlib 
-pandas
+streamlit==1.38.0 
+streamlit-drawable-canvas==0.9.3 
+shapely==2.0.6 
+matplotlib==3.9.2 
+pandas==2.2.3 
+pillow==10.4.0
