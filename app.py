@@ -136,20 +136,64 @@ def _extract_user_polygons(json_data: dict) -> List[Polygon]:
     except Exception as e:
         st.error(f"Ошибка при обработке полигонов: {str(e)}")
         return []
+# Создание холста для контура с проверками
+def create_canvas(width: int, height: int, key: str, drawing_mode: str) -> st_canvas:
+    """Создание холста с обработкой ошибок"""
+    try:
+        # Создаём базовую сетку
+        bg_png_b64 = make_grid_png(width, height, GRID_PX)
+        
+        # Проверяем, что сетка создана корректно
+        if not bg_png_b64:
+            st.error("Ошибка при создании сетки фона")
+            return None
+        
+        # Создаём холст с проверками
+        canvas = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#000000",
+            background_image=f"data:image/png;base64,{bg_png_b64}",
+            height=height,
+            width=width,
+            drawing_mode=drawing_mode,
+            key=key,
+        )
+        
+        # Проверяем успешность создания
+        if not canvas:
+            st.error("Ошибка при создании холста рисования")
+            return None
+            
+        return canvas
+    except Exception as e:
+        st.error(f"Ошибка при создании холста: {str(e)}")
+        return None
 
-# Создание холста для контура
-bg_png_b64 = make_grid_png(CANVAS_WIDTH, CANVAS_HEIGHT, GRID_PX)
-contour_json = st_canvas(
-    fill_color="rgba(0, 0, 0, 0)",
-    stroke_width=2,
-    stroke_color="#000000",
-    background_image=f"data:image/png;base64,{bg_png_b64}",
-    height=CANVAS_HEIGHT,
-    width=CANVAS_WIDTH,
-    drawing_mode="polygon",
-    key="contour_canvas",
+# Создаём холст для контура
+contour_json = create_canvas(
+    CANVAS_WIDTH,
+    CANVAS_HEIGHT,
+    "contour_canvas",
+    "polygon"
 )
-st.caption("Нарисуйте **один** замкнутый полигон. Затем нажмите кнопку ниже.")
+
+if contour_json is None:
+    st.stop()
+
+# Аналогично для холста МОП
+holes_json = create_canvas(
+    CANVAS_WIDTH,
+    CANVAS_HEIGHT,
+    "holes_canvas",
+    "polygon"
+)
+
+if holes_json is None:
+    st.stop()
+
+
+
 
 # Инициализация состояния
 if "contour_poly" not in st.session_state:
