@@ -33,10 +33,11 @@ st.set_page_config(
 st.title("📐 Квартирография — Architect Edition (improved)")
 
 # Настройки в сайдбаре
+st.sidebar.header("🏢 Параметры здания и сетки")
 floors: int = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
 scale_mm_px: float = st.sidebar.number_input("Миллиметров в 1 пикселе", min_value=0.1, value=10.0, step=0.1)
 grid_step_mm: int = st.sidebar.number_input("Шаг сетки, мм", min_value=5, value=100, step=5)
-show_snap: bool = st.sidebar.checkbox("Привязка к сетке", value=True)
+show_snap: bool = st.sidebar.checkbox("Привязка к сэтке", value=True)
 
 # Типы квартир и цвета
 APT_TYPES = ["Студия", "1С", "2С", "3С", "4С"]
@@ -48,29 +49,32 @@ COLORS = {
     "4С": "#9C27B0",
 }
 
-# Функции для валидации и ввода процентов
-
+# Функция валидации процентного распределения
 def validate_apartment_percentages(percentages: Dict[str, float]) -> bool:
+    """Проверка корректности распределения процентов"""
     total = sum(percentages.values())
-    return abs(total - 100.0) < 1e-2
-
+    return abs(total - 100.0) < 0.01
 
 def apartment_percentages() -> Dict[str, float]:
-    inputs: List[float] = []
+    """Сбор пользовательских процентов с валидацией"""
+    inputs = []
     for t in APT_TYPES[:-1]:
         val = st.sidebar.number_input(
             f"% {t}", 0.0, 100.0, 100.0 / len(APT_TYPES), step=1.0, key=f"pct_{t}"
         )
         inputs.append(val)
+    
     sum_inputs = sum(inputs)
     if sum_inputs > 100:
-        st.sidebar.error("Сумма первых четырех типов > 100%. Уменьшите значения.")
+        st.sidebar.error("Сумма первых четырёх типов > 100 %. Уменьшите значения.")
         return {}
+    
     last_val = 100.0 - sum_inputs
     st.sidebar.markdown(f"**% {APT_TYPES[-1]}:** {last_val:.1f} (авто)")
     return {t: v for t, v in zip(APT_TYPES, inputs + [last_val])}
 
-percentages = apartment_percentages()
+# Получаем процентное распределение
+percentages: Dict[str, float] = apartment_percentages()
 
 # Диапазоны площадей
 st.sidebar.subheader("📏 Диапазоны площадей (м²)")
@@ -80,146 +84,200 @@ for t in APT_TYPES:
         t, 10.0, 200.0, (20.0, 50.0), key=f"area_{t}"
     )
 
-# Настройки экспорта проекта
+# Настройки экспорта
 st.sidebar.header("💾 Файлы проекта")
 project_name: str = st.sidebar.text_input("Имя файла проекта", "plan.json")
 
-# Параметры сетки
-GRID_PX = grid_step_mm / scale_mm_px
-
-@st.cache_data(ttl=3600, show_spinner=False)
+# Функция создания сетки с кэшированием
+@st.cache_data(show_spinner=False, ttl=3600)
 def make_grid_png(width: int, height: int, step_px: float) -> str:
+    """Создание PNG сетки с кэшированием"""
+    if step_px < 5:
+        img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+    
     img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
-    if step_px >= 5:
-        draw = ImageDraw.Draw(img)
-        for x in range(0, width, int(step_px)):
-            draw.line([(x, 0), (x, height)], fill=(227, 227, 227, 255))
-        for y in range(0, height, int(step_px)):
-            draw.line([(0, y), (width, y)], fill=(227, 227, 227, 255))
+    draw = ImageDraw.Draw(img)
+    for x in range(0, width, int(step_px)):
+        draw.line([(x, 0), (x, height)], fill=(227, 227, 227, 255))
+    for y in range(0, height, int(step_px)):
+        draw.line([(0, y), (width, y)], fill=(227, 227, 227, 255))
     buffer = BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()
 
-# Извлечение полигонов из JSON
+# Основной контур этажа
+st.subheader("1️⃣ Нарисуйте внешний контур этажа")
+CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
+GRID_PX = grid_step_mm / scale_mm_px
+
+def create_canvas(width: int, height: int, key: str, drawing_mode: str) -> st_canvas:
+    """Создание холста с обработкой ошибок и проверкой типов"""
+    try:
+        # Создаём базовую сетку
+        bg_png_b64 = make_grid_png(width, height, GRID_PX)
+        
+        # Проверяем, что сетка создана корректно
+        if not bg_png_b64:
+            st.error("Ошибка при создании сетки фона")
+            return None
+        
+        # Создаём холст с проверками
+        canvas = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#000000",
+            background_image=bg_png_b64,  # Используем base64 строку напрямую
+            height=height,
+            width=width,
+            drawing_mode=drawing_mode,
+            key=key,
+        )
+        
+        # Проверяем успешность создания
+        if not canvas:
+            st.error("Ошибка при создании холста рисования")
+            return None
+            
+        return canvas
+    except Exception as e:
+        st.error(f"Ошибка при создании холста: {str(e)}")
+        return None
+
+# Создаём холст для контура
+contour_json = create_canvas(
+    CANVAS_WIDTH,
+    CANVAS_HEIGHT,
+    "contour_canvas",
+    "polygon"
+)
+
+if contour_json is None:
+    st.stop()
+
+# Аналогично для холста МОП
+holes_json = create_canvas(
+    CANVAS_WIDTH,
+    CANVAS_HEIGHT,
+    "holes_canvas",
+    "polygon"
+)
+
+if holes_json is None:
+    st.stop()
+
+# Инициализация состояния
+if "contour_poly" not in st.session_state:
+    st.session_state.contour_poly = None
+
+def has_valid_polys(json_data: dict) -> bool:
+    """Проверка наличия валидных полигонов"""
+    return bool(_extract_user_polygons(json_data))
 
 def _extract_user_polygons(json_data: dict) -> List[Polygon]:
+    """Извлечение полигонов из JSON с обработкой ошибок"""
     try:
-        polys: List[Polygon] = []
+        polys = []
         if not json_data:
             return polys
+        
         for obj in json_data.get("objects", []):
             pts: Optional[List[Tuple[float, float]]] = None
             if obj.get("type") == "path":
                 pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
             elif obj.get("type") == "polygon":
                 pts = [(p[0], p[1]) for p in obj["points"]]
+            
             if pts and len(pts) >= 3:
                 if show_snap:
-                    pts = [
-                        (round(x / GRID_PX) * GRID_PX, round(y / GRID_PX) * GRID_PX)
-                        for x, y in pts
-                    ]
-                poly = Polygon(pts)
-                if poly.is_valid and poly.area > 0:
-                    polys.append(poly)
+                    pts = [(round(x / GRID_PX) * GRID_PX, round(y / GRID_PX) * GRID_PX) 
+                          for x, y in pts]
+                polys.append(Polygon(pts))
         return polys
     except Exception as e:
-        st.error(f"Ошибка при обработке полигонов: {e}")
+        st.error(f"Ошибка при обработке полигонов: {str(e)}")
         return []
 
-# Обёртка для создания холста
-
-def create_canvas(width: int, height: int, key: str, drawing_mode: str):
-    try:
-        bg_b64 = make_grid_png(width, height, GRID_PX)
-        if not bg_b64:
-            st.error("Не удалось создать фон сетки")
-            return None
-        canvas = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=2,
-            stroke_color="#000000",
-            background_image=f"data:image/png;base64,{bg_b64}",
-            height=height,
-            width=width,
-            drawing_mode=drawing_mode,
-            key=key,
-        )
-        if canvas is None:
-            st.error("Не удалось создать холст")
-        return canvas
-    except Exception as e:
-        st.error(f"Ошибка при создании холста: {e}")
-        return None
-
-# Проверка наличия валидных полигонов
-
-def has_valid_polys(json_data: Optional[dict]) -> bool:
-    if not json_data:
-        return False
-    return bool(_extract_user_polygons(json_data))
-
-# 1️⃣ Нарисуйте внешний контур этажа
-st.subheader("1️⃣ Нарисуйте внешний контур этажа")
-CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
-contour_canvas = create_canvas(CANVAS_WIDTH, CANVAS_HEIGHT, "contour_canvas", "polygon")
-if contour_canvas is None:
-    st.stop()
-contour_json = contour_canvas.json_data
-
-# Сохранение контура
-if "contour_poly" not in st.session_state:
-    st.session_state.contour_poly = None
-save_contour = st.button("📌 Сохранить контур", disabled=not has_valid_polys(contour_json))
+# Кнопка сохранения контура с валидацией
+save_contour = st.button("📌 Сохранить контур", disabled=not has_valid_polys(contour_json.json_data))
 if save_contour:
-    polys_px = _extract_user_polygons(contour_json)
-    if not polys_px:
-        st.warning("Не найдено корректных полигонов.")
-    else:
-        st.session_state.contour_poly = polys_px[0]
-        st.success("Контур сохранен")
+    try:
+        polygons_px = _extract_user_polygons(contour_json.json_data)
+        if not polygons_px:
+            st.warning("Не найдено корректных полигонов.")
+        else:
+            if len(polygons_px) > 1:
+                st.warning("Найдены несколько полигонов. Используется первый.")
+            st.session_state.contour_poly = polygons_px[0]
+    except Exception as e:
+        st.error(f"Ошибка при сохранении контура: {str(e)}")
 
-# 2️⃣ Нарисуйте зоны МОП
+# Зоны МОП
 st.subheader("2️⃣ Нарисуйте зоны МОП (необязательно)")
-holes_canvas = create_canvas(CANVAS_WIDTH, CANVAS_HEIGHT, "holes_canvas", "polygon")
-if holes_canvas is None:
-    st.stop()
-holes_json = holes_canvas.json_data
+holes_json = st_canvas(
+    fill_color="rgba(255,0,0,0.3)",
+    stroke_width=2,
+    stroke_color="#ff0000",
+    background_image=f"data:image/png;base64,{make_grid_png(CANVAS_WIDTH, CANVAS_HEIGHT, GRID_PX)}",
+    height=CANVAS_HEIGHT,
+    width=CANVAS_WIDTH,
+    drawing_mode="polygon",
+    key="holes_canvas",
+)
 
-# Инициализация МОП
+# Инициализация списка МОП
 if "holes_polys" not in st.session_state:
-    st.session_state.holes_polys = []
-# Добавление МОП
-add_hole = st.button("➕ Добавить МОП", disabled=not has_valid_polys(holes_json))
+    st.session_state.holes_polys: List[Polygon] = []
+
+# Кнопка добавления МОП
+add_hole = st.button("➕ Добавить МОП", disabled=not has_valid_polys(holes_json.json_data))
 if add_hole:
-    new_holes = _extract_user_polygons(holes_json)
-    if new_holes:
+    try:
+        new_holes = _extract_user_polygons(holes_json.json_data)
         st.session_state.holes_polys.extend(new_holes)
-        st.success(f"Добавлено {len(new_holes)} зон МОП")
-# Очистка МОП
-if st.session_state.holes_polys and st.button("🗑 Очистить МОП"):
-    st.session_state.holes_polys.clear()
-    st.success("МОП очищены")
+    except Exception as e:
+        st.error(f"Ошибка при добавлении МОП: {str(e)}")
 
-# Валидация и построение итогового полигона этажа
-if st.session_state.contour_poly is None:
-    st.error("Нарисуйте и сохраните внешний контур")
+# Кнопка очистки МОП
+if st.session_state.holes_polys:
+    if st.button("🗑 Очистить МОП"):
+        st.session_state.holes_polys.clear()
+
+# Валидация полигонов
+def validate_floor_polygon() -> Tuple[bool, str]:
+    """Валидация полигонов с детальным сообщением об ошибке"""
+    if st.session_state.contour_poly is None:
+        return False, "Нарисуйте и сохраните внешний контур"
+    
+    outer = st.session_state.contour_poly
+    if not outer.is_valid or not outer.is_simple:
+        return False, "Внешний контур некорректен (самопересечения и т. п.)"
+    
+    floor_poly = outer
+    for h in st.session_state.holes_polys:
+        if h.is_valid:
+            floor_poly = floor_poly.difference(h)
+    
+    if floor_poly.is_empty:
+        return False, "После вычитания МОП не осталось площади этажа!"
+    
+    return True, ""
+
+# Проверка валидности
+is_valid, error_msg = validate_floor_polygon()
+if not is_valid:
+    st.error(error_msg)
     st.stop()
-# Вычитание МОП
-floor_poly = st.session_state.contour_poly
-for h in st.session_state.holes_polys:
-    if h.is_valid:
-        floor_poly = floor_poly.difference(h)
-# Если MultiPolygon, берём самый большой фрагмент
-if isinstance(floor_poly, MultiPolygon):
-    floor_poly = max(floor_poly.geoms, key=lambda p: p.area)
 
-# Метрики этажа
+# Метрика этажа
 minx, miny, maxx, maxy = floor_poly.bounds
 width_mm = (maxx - minx) * scale_mm_px
 height_mm = (maxy - miny) * scale_mm_px
 area_m2 = floor_poly.area * (scale_mm_px ** 2) / 1e6
 st.success(f"Контур: **{width_mm:.0f} × {height_mm:.0f} мм**, площадь **{area_m2:.2f} м²**")
+
 # Улучшенный алгоритм разбиения
 @st.cache_data(show_spinner=False)
 def split_poly(poly: Polygon, target_px2: float, tol: float = 0.05) -> Tuple[Polygon, Optional[Polygon]]:
