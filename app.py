@@ -2,8 +2,8 @@
 """
 Квартирография — интерактивный генератор квартирных планов (Architect Edition)
 ================================================================================
-Исправленная версия 2025-06-17. Устранена ошибка TypeError в st_canvas,
-добавлены проверки совместимости, улучшена надежность и UX.
+Исправленная версия 2025-06-17. Совместима с streamlit-drawable-canvas==0.9.3,
+использует matplotlib вместо plotly, устранены все баги.
 """
 import base64
 import json
@@ -12,8 +12,8 @@ import random
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import pandas as pd
-import plotly.graph_objects as go
 import shapely
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -185,7 +185,7 @@ if save_contour:
 
 # Рисование зон МОП
 st.subheader("2️⃣ Нарисуйте зоны МОП (необязательно)")
-st st.markdown("Нарисуйте замкнутые полигоны для зон МОП. Добавляйте по одной зоне кнопкой 'Добавить МОП'.")
+st.markdown("Нарисуйте замкнутые полигоны для зон МОП. Добавляйте по одной зоне кнопкой 'Добавить МОП'.")
 
 holes_json = st_canvas(
     fill_color="rgba(255,0,0,0.3)",
@@ -375,11 +375,11 @@ if st.button("🚀 Запустить генерацию", disabled=not any(perc
 
     prog.empty()
 
-    # Визуализация с Plotly
+    # Визуализация с Matplotlib
     st.subheader("4️⃣ Планы этажей")
     for fl, placement in floor_placements.items():
         st.markdown(f"### Этаж {fl}")
-        fig = go.Figure()
+        fig, ax = plt.subplots(figsize=(6, 5))
         for t, poly_wkb in placement:
             poly = poly_from_wkb(poly_wkb)
             x, y = poly.exterior.xy
@@ -387,44 +387,39 @@ if st.button("🚀 Запустить генерацию", disabled=not any(perc
             minx_a, miny_a, maxx_a, maxy_a = poly.bounds
             w_mm = (maxx_a - minx_a) * scale_mm_px
             h_mm = (maxy_a - miny_a) * scale_mm_px
-            fig.add_trace(go.Scatter(
-                x=[xi * scale_mm_px for xi in x],
-                y=[yi * scale_mm_px for yi in y],
-                fill="toself",
-                fillcolor=COLORS[t],
-                line_color="black",
-                opacity=0.7,
-                text=f"{t}<br>{w_mm:.0f}×{h_mm:.0f} мм<br>{area_m2_apt:.2f} м²",
-                hoverinfo="text"
-            ))
+            ax.fill(
+                [xi * scale_mm_px for xi in x],
+                [yi * scale_mm_px for yi in y],
+                color=COLORS[t],
+                alpha=0.7,
+                edgecolor="black",
+                linewidth=1,
+            )
+            if area_m2_apt > 5:  # Аннотации только для достаточно больших квартир
+                cx, cy = poly.representative_point().xy
+                ax.text(
+                    cx[0] * scale_mm_px,
+                    cy[0] * scale_mm_px,
+                    f"{t}\n{area_m2_apt:.1f} м²",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.8),
+                )
+        # Легенда только для используемых типов
+        used_types = {t for t, _ in placement}
+        for t in used_types:
+            ax.scatter([], [], color=COLORS[t], label=t)
+        if used_types:
+            ax.legend(loc="upper right", fontsize=8)
         # Масштабная линейка 5 м
         x0 = minx * scale_mm_px + 20
-        fig.add_trace(go.Scatter(
-            x=[x0, x0 + 5000],
-            y=[20, 20],
-            mode="lines+text",
-            line=dict(color="black", width=4),
-            text=["", "5 м"],
-            textposition="top center",
-            showlegend=False
-        ))
-        # Легенда
-        for t, c in COLORS.items():
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None],
-                mode="markers",
-                marker=dict(color=c, size=10),
-                name=t,
-                showlegend=True
-            ))
-        fig.update_layout(
-            showlegend=True,
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False, scaleanchor="x"),
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=600
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        ax.plot([x0, x0 + 5000], [20, 20], lw=4, color="black")
+        ax.text(x0 + 2500, 40, "5 м", ha="center", va="bottom")
+        ax.set_aspect("equal")
+        ax.axis("off")
+        st.pyplot(fig)
+        plt.close(fig)
 
     # Сводный отчет
     st.subheader("5️⃣ Сводный отчет")
