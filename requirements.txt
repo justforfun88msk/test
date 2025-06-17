@@ -2,3 +2,4 @@ streamlit
 streamlit-drawable-canvas
 shapely
 matplotlib
+ezdxf
