@@ -1,5 +1,5 @@
-streamlit==1.24.1
-streamlit-drawable-canvas==0.10.1
-shapely==2.0.1
-matplotlib==3.7.1
-pandas==2.0.1
+streamlit>=1.10
+streamlit-drawable-canvas>=0.10.0
+shapely>=2.0
+matplotlib>=3.5
+pandas>=1.3
