@@ -1,2 +1,4 @@
-pip install streamlit shapely streamlit-drawable-canvas matplotlib
-streamlit run app.py
+streamlit
+streamlit-drawable-canvas
+shapely
+matplotlib
