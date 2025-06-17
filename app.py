@@ -1,8 +1,68 @@
+# -*- coding: utf-8 -*-
+"""
+📐 Квартирография Architect Edition — интерактивный генератор поэтажной квартирографии с учётом МОПов и сетки
+"""
+
+import streamlit as st
+from streamlit_drawable_canvas import st_canvas
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import unary_union
+import matplotlib.pyplot as plt
+from io import BytesIO
+import pandas as pd
+import random
+from PIL import Image, ImageDraw
+
+# ==== Константы ====
+SCALE_CM_PER_CELL = 10   # 10 см = 1 клетка
+CELL_SIZE_PX = 20        # размер клетки на экране в пикселях
+
+# ==== Конфигурация страницы ====
+st.set_page_config(page_title="Квартирография Architect Edition", layout="wide")
+st.title("📐 Квартирография — Architect Edition")
+
+# ==== Ввод параметров здания ====
+st.sidebar.header("🏢 Параметры здания")
+floors = st.sidebar.number_input("Этажей в доме", min_value=1, value=23)
+floor_width_m = st.sidebar.number_input("Ширина этажа (м)", min_value=1.0, value=10.5)
+floor_length_m = st.sidebar.number_input("Длина этажа (м)", min_value=1.0, value=72.0)
+
+# ==== Расчёт размеров канвы ====
+grid_cols = int((floor_length_m * 100) / SCALE_CM_PER_CELL)
+grid_rows = int((floor_width_m * 100) / SCALE_CM_PER_CELL)
+canvas_width = grid_cols * CELL_SIZE_PX
+canvas_height = grid_rows * CELL_SIZE_PX
+
+# ==== Генерация изображения сетки ====
+def generate_grid_image(width_px, height_px, cell_size):
+    img = Image.new("RGB", (width_px, height_px), "white")
+    draw = ImageDraw.Draw(img)
+    for x in range(0, width_px, cell_size):
+        draw.line([(x, 0), (x, height_px)], fill="#DDD")
+    for y in range(0, height_px, cell_size):
+        draw.line([(0, y), (width_px, y)], fill="#DDD")
+    return img
+
+grid_img = generate_grid_image(canvas_width, canvas_height, CELL_SIZE_PX)
+
+# ==== Параметры квартир ====
+st.sidebar.header("🏘 Распределение типов квартир (%)")
+percent_distribution = {
+    "Студия": st.sidebar.slider("Студии", 0.0, 100.0, 1.4),
+    "1-комн": st.sidebar.slider("1-комн", 0.0, 100.0, 34.6),
+    "2-комн": st.sidebar.slider("2-комн", 0.0, 100.0, 41.8),
+    "3-комн": st.sidebar.slider("3-комн", 0.0, 100.0, 21.8),
+}
+
+# ==== Рисование МОПов ====
+st.subheader("1️⃣ Нарисуйте МОПы (нежилые зоны)")
+st.caption("Полигональные области, которые будут исключены из планировки квартир")
+
 canvas_result = st_canvas(
     fill_color="rgba(255, 0, 0, 0.3)",
     stroke_width=2,
     stroke_color="#FF0000",
-    background_image=Image.fromarray(grid_img),
+    background_image=grid_img,
     update_streamlit=True,
     height=canvas_height,
     width=canvas_width,
@@ -41,7 +101,7 @@ apt_constraints = {
     "3-комн": {"min": 66, "max": 99, "width": 7.2},
 }
 
-TOTAL_AREA_M2 = (floor_width_m * floor_length_m - (len(mop_polys) * 15)) * floors  # оценка МОПов в 15 м2 каждый
+TOTAL_AREA_M2 = (floor_width_m * floor_length_m - (len(mop_polys) * 15)) * floors
 
 @st.cache_data
 def generate_apartments():
