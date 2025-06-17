@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import pandas as pd
 import random
+from PIL import Image, ImageDraw
+import base64
 
 # ==== Константы ====
 SCALE_CM_PER_CELL = 10   # 10 см = 1 клетка
@@ -33,6 +35,21 @@ grid_rows = int((floor_width_m * 100) / SCALE_CM_PER_CELL)
 canvas_width = grid_cols * CELL_SIZE_PX
 canvas_height = grid_rows * CELL_SIZE_PX
 
+# ==== Генерация изображения сетки ====
+def generate_grid_image(width_px, height_px, cell_size):
+    img = Image.new("RGB", (width_px, height_px), "white")
+    draw = ImageDraw.Draw(img)
+    for x in range(0, width_px, cell_size):
+        draw.line([(x, 0), (x, height_px)], fill="#DDD")
+    for y in range(0, height_px, cell_size):
+        draw.line([(0, y), (width_px, y)], fill="#DDD")
+    return img
+
+grid_img = generate_grid_image(canvas_width, canvas_height, CELL_SIZE_PX)
+buf = BytesIO()
+grid_img.save(buf, format="PNG")
+grid_img_b64 = base64.b64encode(buf.getvalue()).decode()
+
 # ==== Параметры квартир ====
 st.sidebar.header("🏘 Распределение типов квартир (%)")
 percent_distribution = {
@@ -50,14 +67,12 @@ canvas_result = st_canvas(
     fill_color="rgba(255, 0, 0, 0.3)",  # красные прозрачные МОПы
     stroke_width=2,
     stroke_color="#FF0000",
-    background_color="#FFFFFF",
+    background_image=f"data:image/png;base64,{grid_img_b64}",
     update_streamlit=True,
     height=canvas_height,
     width=canvas_width,
     drawing_mode="polygon",
-    key="canvas_mop",
-    grid_color="#DDD",
-    grid_spacing=CELL_SIZE_PX,
+    key="canvas_mop"
 )
 
 # ==== Обработка МОПов ====
