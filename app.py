@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-📐 Квартирография Architect Edition (с учётом МОПов и сеткой 10 см)
-Streamlit-программа для интерактивной разметки этажей с визуальной сеткой, исключением МОПов и генерацией квартир по %.
+📐 Квартирография Architect Edition — интерактивный генератор поэтажной квартирографии с учётом МОПов и сетки
 """
 
 import streamlit as st
@@ -13,7 +12,6 @@ from io import BytesIO
 import pandas as pd
 import random
 from PIL import Image, ImageDraw
-import base64
 
 # ==== Константы ====
 SCALE_CM_PER_CELL = 10   # 10 см = 1 клетка
@@ -29,7 +27,7 @@ floors = st.sidebar.number_input("Этажей в доме", min_value=1, value=
 floor_width_m = st.sidebar.number_input("Ширина этажа (м)", min_value=1.0, value=10.5)
 floor_length_m = st.sidebar.number_input("Длина этажа (м)", min_value=1.0, value=72.0)
 
-# ==== Расчёт канвы ====
+# ==== Расчёт размеров канвы ====
 grid_cols = int((floor_length_m * 100) / SCALE_CM_PER_CELL)
 grid_rows = int((floor_width_m * 100) / SCALE_CM_PER_CELL)
 canvas_width = grid_cols * CELL_SIZE_PX
@@ -46,9 +44,6 @@ def generate_grid_image(width_px, height_px, cell_size):
     return img
 
 grid_img = generate_grid_image(canvas_width, canvas_height, CELL_SIZE_PX)
-buf = BytesIO()
-grid_img.save(buf, format="PNG")
-grid_img_b64 = base64.b64encode(buf.getvalue()).decode()
 
 # ==== Параметры квартир ====
 st.sidebar.header("🏘 Распределение типов квартир (%)")
@@ -59,7 +54,7 @@ percent_distribution = {
     "3-комн": st.sidebar.slider("3-комн", 0.0, 100.0, 21.8),
 }
 
-# ==== Полотно для рисования ====
+# ==== Рисование МОПов ====
 st.subheader("1️⃣ Нарисуйте МОПы (нежилые зоны)")
 st.caption("Полигональные области, которые будут исключены из планировки квартир")
 
@@ -67,7 +62,7 @@ canvas_result = st_canvas(
     fill_color="rgba(255, 0, 0, 0.3)",  # красные прозрачные МОПы
     stroke_width=2,
     stroke_color="#FF0000",
-    background_image=f"data:image/png;base64,{grid_img_b64}",
+    background_image=grid_img,  # <-- важно: передаём PIL.Image
     update_streamlit=True,
     height=canvas_height,
     width=canvas_width,
@@ -106,7 +101,7 @@ apt_constraints = {
     "3-комн": {"min": 66, "max": 99, "width": 7.2},
 }
 
-TOTAL_AREA_M2 = (floor_width_m * floor_length_m - (len(mop_polys) * 15)) * floors  # оценка МОПов в 15 м2 каждый
+TOTAL_AREA_M2 = (floor_width_m * floor_length_m - (len(mop_polys) * 15)) * floors  # оценка МОПов в 15 м² каждый
 
 @st.cache_data
 def generate_apartments():
