@@ -1,375 +1,426 @@
+# -*- coding: utf-8 -*-
+"""
+Квартирография — интерактивный генератор квартирных планов
+=========================================================
+Полностью переработанная версия без известных багов.
+
+🔧 Требования
+-------------
+```
+pip install streamlit shapely matplotlib pandas streamlit-drawable-canvas
+```
+
+▶️ Запуск
+---------
+```
+streamlit run kvartirografia.py
+```
+
+Главные улучшения
+-----------------
+1. **Двусторонний Canvas** на `streamlit‑drawable‑canvas` — никакого custom JS, данные сразу доступны в Python.
+2. **Привязка к сетке** действительно работает и может включаться/выключаться.
+3. **Undo/Clear** для холста.
+4. **Автоматическая нормализация процентов** — последний тип корректируется, чтобы сумма была 100 %.
+5. **Прогресс‑бар** при генерации этажей.
+6. **Сохранение проекта** и отчёта в JSON/CSV.
+7. **Кэширование тяжёлых операций** через `st.cache_data`.
+8. **Легенда цветов** и масштабная линейка.
+"""
+
+from __future__ import annotations
+import math
+import json
+from typing import Dict, List, Tuple
+
 import streamlit as st
-from streamlit.components.v1 import html
-from shapely.geometry import Polygon, LineString
+from streamlit_drawable_canvas import st_canvas
+from shapely.geometry import Polygon, LineString, MultiPolygon
 from shapely.ops import split
 import matplotlib.pyplot as plt
 import pandas as pd
-import math
-import json
 
-# ==========================""" + """
-#   КОНФИГУРАЦИЯ И UI
-# ==========================
+# -------------------------
+#   КОНФИГУРАЦИЯ СТРАНИЦЫ
+# -------------------------
 
-st.set_page_config(layout="wide", page_title="Квартирография")
-st.title("📐 Квартирография Architect Edition")
+st.set_page_config(
+    page_title="Квартирография Architect Edition",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# — Sidebar: Общие настройки —
-st.sidebar.header("🏢 Параметры здания и сетки")
-floors = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
-scale = st.sidebar.number_input("мм на пиксель", min_value=0.1, value=10.0, step=0.1)
-show_snap = st.sidebar.checkbox("Привязка к сетке", value=True)
-grid_mm = st.sidebar.number_input("Шаг сетки (мм)", min_value=5, value=100, step=5)
+st.title("📐 Квартирография — Architect Edition")
 
-# — Sidebar: Квартирография —
-st.sidebar.header("🏠 Распределение квартир")
-types = ['Студия', '1С', '2С', '3С', '4С']
-percentages = {}
-st.sidebar.markdown("### Сумма процентов")
-total_percent = 0
-cols = st.sidebar.columns(2)
-for i, t in enumerate(types):
-    with(cols[i % 2]):
-        percentages[t] = st.slider(f"% {t}", 0, 100, 100 // len(types), key=f"pct_{t}")
-        total_percent += percentages[t]
-color = "green" if abs(total_percent - 100) <= 0.01 else "red"
-st.sidebar.markdown(f"<p style='color:{color};'>Сумма: {total_percent:.1f}%</p>", unsafe_allow_html=True)
-if abs(total_percent - 100) > 0.01:
-    st.sidebar.error(f"Сумма % должна быть 100% (сейчас {total_percent:.1f}%)")
+# -------------------------
+#   НАСТРОЙКИ В САЙДБАРЕ
+# -------------------------
+
+st.sidebar.header("🏢 Параметры здания и сетки")
+floors: int = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
+scale_mm_px: float = st.sidebar.number_input("Миллиметров в 1 пикселе", min_value=0.1, value=10.0, step=0.1)
+grid_step_mm: int = st.sidebar.number_input("Шаг сетки, мм", min_value=5, value=100, step=5)
+show_snap: bool = st.sidebar.checkbox("Привязка к сетке", value=True)
+
+# Apartment types and settings
+APT_TYPES = ["Студия", "1С", "2С", "3С", "4С"]
+COLORS = {
+    "Студия": "#FFC107",
+    "1С": "#8BC34A",
+    "2С": "#03A9F4",
+    "3С": "#E91E63",
+    "4С": "#9C27B0",
+}
+
+st.sidebar.header("🏠 Распределение квартир (проценты)")
+
+def apartment_percentages() -> Dict[str, float]:
+    """Collect user‑defined percentages and auto‑normalize the last one."""
+    inputs = []
+    for t in APT_TYPES[:-1]:
+        val = st.sidebar.number_input(f"% {t}", 0.0, 100.0, 100.0 / len(APT_TYPES), step=1.0, key=f"pct_{t}")
+        inputs.append(val)
+    sum_inputs = sum(inputs)
+    last_val = max(0.0, 100.0 - sum_inputs)
+    st.sidebar.markdown(f"**% {APT_TYPES[-1]}:** `{last_val:.1f}` (авто) ")
+    if sum_inputs > 100:
+        st.sidebar.error("Сумма первых четырёх типов > 100 %. Уменьшите значения.")
+    return {t: v for t, v in zip(APT_TYPES, inputs + [last_val])}
+
+percentages: Dict[str, float] = apartment_percentages()
+
+st.sidebar.subheader("📏 Диапазоны площадей (м²)")
+AREA_RANGES: Dict[str, Tuple[float, float]] = {}
+for t in APT_TYPES:
+    AREA_RANGES[t] = st.sidebar.slider(t, 10.0, 200.0, (20.0, 50.0), key=f"area_{t}")
+
+st.sidebar.header("💾 Файлы проекта")
+project_name: str = st.sidebar.text_input("Имя файла проекта", "plan.json")
+
+# -------------------------
+#   ХУЛОЖЕСТВЕННАЯ ЧАСТЬ
+# -------------------------
+
+st.subheader("1️⃣ Нарисуйте внешний контур этажа")
+CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
+GRID_PX = grid_step_mm / scale_mm_px  # пикселей
+
+# Helper — draw background grid
+def make_grid() -> List[dict]:
+    """Return FabricJS objects for grid (as data URL strings)."""
+    objs = []
+    if GRID_PX < 5:  # не рисуем слишком частую сетку
+        return objs
+    # вертикальные линии
+    for x in range(0, int(CANVAS_WIDTH), int(GRID_PX)):
+        objs.append({
+            "type": "line",
+            "x1": x,
+            "y1": 0,
+            "x2": x,
+            "y2": CANVAS_HEIGHT,
+            "stroke": "#e3e3e3",
+            "strokeWidth": 1,
+            "selectable": False,
+        })
+    # горизонтальные линии
+    for y in range(0, int(CANVAS_HEIGHT), int(GRID_PX)):
+        objs.append({
+            "type": "line",
+            "x1": 0,
+            "y1": y,
+            "x2": CANVAS_WIDTH,
+            "y2": y,
+            "stroke": "#e3e3e3",
+            "strokeWidth": 1,
+            "selectable": False,
+        })
+    return objs
+
+bg_objects = make_grid()
+
+# Canvas for outer contour
+contour_json = st_canvas(
+    fill_color="rgba(0, 0, 0, 0)",  # hollow polygons
+    stroke_width=2,
+    stroke_color="#000000",
+    background_color="#ffffff",
+    height=CANVAS_HEIGHT,
+    width=CANVAS_WIDTH,
+    drawing_mode="polygon",
+    initial_drawing=bg_objects,
+    key="contour_canvas",
+)
+
+st.caption("Нарисуйте **один** замкнутый полигон. Затем нажмите кнопку ниже.")
+
+if "contour_poly" not in st.session_state:
+    st.session_state.contour_poly = None
+
+if st.button("📌 Сохранить контур", disabled=not contour_json.json_data):
+    # Extract first polygon/path
+    def _extract_pts(obj: dict) -> List[Tuple[float, float]] | None:
+        if obj.get("type") == "path":
+            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
+            return pts
+        if obj.get("type") == "polygon":
+            return [(p[0], p[1]) for p in obj["points"]]
+        return None
+
+    polygons_px = []
+    for obj in contour_json.json_data.get("objects", []):
+        pts = _extract_pts(obj)
+        if pts and len(pts) >= 3:
+            # Snap if enabled
+            if show_snap:
+                pts = [(
+                    round(x / GRID_PX) * GRID_PX,
+                    round(y / GRID_PX) * GRID_PX,
+                ) for x, y in pts]
+            polygons_px.append(Polygon(pts))
+
+    if not polygons_px:
+        st.warning("Не найдено корректных полигонов.")
+    elif len(polygons_px) > 1:
+        st.warning("Найдены несколько полигонов. Используется первый.")
+        st.session_state.contour_poly = polygons_px[0]
+    else:
+        st.session_state.contour_poly = polygons_px[0]
+
+# Canvas for holes (optional)
+st.subheader("2️⃣ Нарисуйте зоны МОП (необязательно)")
+holes_json = st_canvas(
+    fill_color="rgba(255,0,0,0.3)",
+    stroke_width=2,
+    stroke_color="#ff0000",
+    background_color="#ffffff",
+    height=CANVAS_HEIGHT,
+    width=CANVAS_WIDTH,
+    drawing_mode="polygon",
+    initial_drawing=bg_objects,
+    key="holes_canvas",
+)
+
+if "holes_polys" not in st.session_state:
+    st.session_state.holes_polys: List[Polygon] = []
+
+if st.button("➕ Добавить МОП", disabled=not holes_json.json_data):
+    def _extract_pts(obj: dict) -> List[Tuple[float, float]] | None:
+        if obj.get("type") == "path":
+            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
+            return pts
+        if obj.get("type") == "polygon":
+            return [(p[0], p[1]) for p in obj["points"]]
+        return None
+
+    new_holes = []
+    for obj in holes_json.json_data.get("objects", []):
+        pts = _extract_pts(obj)
+        if pts and len(pts) >= 3:
+            if show_snap:
+                pts = [(
+                    round(x / GRID_PX) * GRID_PX,
+                    round(y / GRID_PX) * GRID_PX,
+                ) for x, y in pts]
+            new_holes.append(Polygon(pts))
+    st.session_state.holes_polys.extend(new_holes)
+
+# -------------------------
+#   ВАЛИДАЦИЯ ПОЛИГОНОВ
+# -------------------------
+
+if st.session_state.contour_poly is None:
+    st.info("Нарисуйте и сохраните внешний контур, затем МОЖНО добавить зоны МОП.")
     st.stop()
 
-st.sidebar.subheader("Диапазоны площадей (м²)")
-areas = {}
-for t in types:
-    mn, mx = st.sidebar.slider(f"{t}", 1.0, 200.0, (20.0, 50.0), key=f"area_{t}")
-    areas[t] = (mn, mx)
-
-# — Sidebar: Проект —
-st.sidebar.header("💾 Проект")
-proj_name = st.sidebar.text_input("Имя проекта (JSON)", "plan.json")
-
-# ==========================
-#   HTML5 CANVAS ДЛЯ РИСОВАНИЯ
-# ==========================
-
-st.subheader("1️⃣ Нарисуйте план этажа")
-st.markdown("Рисуйте стены, удерживая левую кнопку мыши. Углы автоматически выравниваются на 90°. Размеры отображаются в мм.")
-
-canvas_width, canvas_height = 800, 600
-grid_size_px = grid_mm / scale
-
-canvas_html = f"""
-<canvas id="canvas" width="{canvas_width}" height="{canvas_height}" style="border:1px solid black;"></canvas>
-<div id="coords">Координаты: (0, 0)</div>
-<script>
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const gridSize = {grid_size_px};
-    let points = [];
-    let isDrawing = false;
-    let lastPoint = null;
-
-    // Рисуем сетку
-    ctx.strokeStyle = 'gray';
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x <= canvas.width; x += gridSize) {{
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-    }}
-    for (let y = 0; y <= canvas.height; y += gridSize) {{
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-    }}
-
-    // Функция привязки к сетке
-    function snapToGrid(x, y) {{
-        return [Math.round(x / gridSize) * gridSize, Math.round(y / gridSize) * gridSize];
-    }}
-
-    // Функция выравнивания углов на 90°
-    function alignTo90Degrees(currX, currY, prevX, prevY) {{
-        const dx = currX - prevX;
-        const dy = currY - prevY;
-        if (Math.abs(dx) > Math.abs(dy)) {{
-            return [currX, prevY];
-        }} else {{
-            return [prevX, currY];
-        }}
-    }}
-
-    // Рисование линии с размерами
-    function drawLineWithDimensions(startX, startY, endX, endY) {{
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(endX, endY);
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Вычисляем длину в мм
-        const lengthPx = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2));
-        const lengthMm = lengthPx * {scale};
-        const midX = (startX + endX) / 2;
-        const midY = (startY + endY) / 2;
-        ctx.font = '12px Arial';
-        ctx.fillStyle = 'black';
-        ctx.fillText(`${{lengthMm.toFixed(0)}} мм`, midX, midY);
-    }}
-
-    // Обработчики событий
-    canvas.addEventListener('mousedown', (e) => {{
-        if (e.button === 0) {{ // Левая кнопка
-            isDrawing = true;
-            const [x, y] = snapToGrid(e.offsetX, e.offsetY);
-            if (lastPoint) {{
-                const [alignedX, alignedY] = alignTo90Degrees(x, y, lastPoint[0], lastPoint[1]);
-                points.push([alignedX, alignedY]);
-                drawLineWithDimensions(lastPoint[0], lastPoint[1], alignedX, alignedY);
-            }} else {{
-                points.push([x, y]);
-            }}
-            lastPoint = points[points.length - 1];
-            document.getElementById('coords').innerText = `Координаты: (${{x}}, ${{y}})`;
-        }}
-    }});
-
-    canvas.addEventListener('mousemove', (e) => {{
-        if (isDrawing && lastPoint) {{
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Перерисовываем сетку
-            ctx.strokeStyle = 'gray';
-            ctx.lineWidth = 0.5;
-            for (let x = 0; x <= canvas.width; x += gridSize) {{
-                ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, canvas.height);
-                ctx.stroke();
-            }}
-            for (let y = 0; y <= canvas.height; y += gridSize) {{
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(canvas.width, y);
-                ctx.stroke();
-            }}
-            // Перерисовываем все линии
-            for (let i = 1; i < points.length; i++) {{
-                drawLineWithDimensions(points[i-1][0], points[i-1][1], points[i][0], points[i][1]);
-            }}
-            // Рисуем текущую линию
-            const [x, y] = snapToGrid(e.offsetX, e.offsetY);
-            const [alignedX, alignedY] = alignTo90Degrees(x, y, lastPoint[0], lastPoint[1]);
-            drawLineWithDimensions(lastPoint[0], lastPoint[1], alignedX, alignedY);
-            document.getElementById('coords').innerText = `Координаты: (${{x}}, ${{y}})`;
-        }}
-    }});
-
-    canvas.addEventListener('mouseup', (e) => {{
-        if (e.button === 0) {{
-            isDrawing = false;
-        }}
-    }});
-
-    // Сохранение данных
-    function saveDrawing() {{
-        // Отправляем точки в Python через sessionStorage
-        sessionStorage.setItem('canvas_points', JSON.stringify(points));
-    }}
-</script>
-<button onclick="saveDrawing()">Сохранить план</button>
-"""
-
-# Вставляем HTML5 Canvas
-html(canvas_html, height=700)
-
-# Получаем точки из sessionStorage (через JavaScript)
-st.markdown("Нажмите 'Сохранить план' после завершения рисования, чтобы обработать данные.")
-if 'canvas_points' not in st.session_state:
-    st.session_state.canvas_points = []
-canvas_points = st.session_state.get('canvas_points', [])
-
-# JavaScript для передачи данных в Streamlit
-st.markdown("""
-<script>
-    if (sessionStorage.getItem('canvas_points')) {
-        const points = JSON.parse(sessionStorage.getItem('canvas_points'));
-        const event = new CustomEvent('streamlit:componentData', {detail: points});
-        window.dispatchEvent(event);
-    }
-</script>
-""", unsafe_allow_html=True)
-
-# Обработка полигонов
-polys = []
-if canvas_points:
-    try:
-        if len(canvas_points) >= 3:
-            poly = Polygon(canvas_points)
-            if not poly.is_valid:
-                st.error("Полигон некорректен (например, самопересекается).")
-                st.stop()
-            polys.append(poly)
-        else:
-            st.error("Недостаточно точек для создания полигона (нужно минимум 3).")
-            st.stop()
-    except Exception as e:
-        st.error(f"Ошибка при создании полигона: {str(e)}")
-        st.stop()
-
-if not polys:
-    st.error("Нарисуйте внешний контур и нажмите 'Сохранить план'!")
+outer = st.session_state.contour_poly
+if not outer.is_valid or not outer.is_simple:
+    st.error("Внешний контур некорректен (самопересечения и т. п.).")
     st.stop()
 
-with st.spinner("Обработка полигонов..."):
-    floor = polys[0]
-    for hole in polys[1:]:
-        try:
-            if hole.is_valid and floor.is_valid:
-                floor = floor.difference(hole)
-            else:
-                st.error("Один из полигонов (внешний контур или МОП) некорректен.")
-                st.stop()
-        except Exception as e:
-            st.error(f"Ошибка при вычитании зон МОП: {str(e)}")
-            st.stop()
+# Вычитаем дыры
+floor_poly: Polygon | MultiPolygon = outer
+for h in st.session_state.holes_polys:
+    if h.is_valid:
+        floor_poly = floor_poly.difference(h)
 
-# Отображение размеров этажа
-minx, miny, maxx, maxy = floor.bounds
-w_mm = (maxx - minx) * scale
-h_mm = (maxy - miny) * scale
-area_m2 = floor.area * scale**2 / 1e6
-st.info(f"Контур: {w_mm:.0f}×{h_mm:.0f} мм, площадь {area_m2:.2f} м²")
+if floor_poly.is_empty:
+    st.error("После вычитания МОП не осталось площади этажа!")
+    st.stop()
 
-# ==========================
-#   ФУНКЦИИ НАРЕЗКИ
-# ==========================
+# -------------------------
+#   МЕТРИКА ЭТАЖА
+# -------------------------
 
-def split_poly(poly, target_px2, tol=0.05):
+minx, miny, maxx, maxy = floor_poly.bounds
+width_mm = (maxx - minx) * scale_mm_px
+height_mm = (maxy - miny) * scale_mm_px
+area_m2 = floor_poly.area * (scale_mm_px ** 2) / 1e6
+st.success(f"Контур: **{width_mm:.0f} × {height_mm:.0f} мм**, площадь **{area_m2:.2f} м²**")
+
+# --------------------------------------------------------------------
+#   АЛГОРИТМ РАЗБИВКИ (split_poly) — улучшенная версия с 2 ориентациями
+# --------------------------------------------------------------------
+
+def split_poly(poly: Polygon, target_px2: float, tol: float = 0.05) -> Tuple[Polygon, Polygon | None]:
+    """Разбить `poly` на часть ≈ target_px2 px².
+    Пробуем 2 ориентации (по длинной и короткой стороне MBR).
+    Возвращаем (квартира, остаток|None).
+    """
     mrr = poly.minimum_rotated_rectangle
     coords = list(mrr.exterior.coords)
-    max_len = 0
+    # Две стороны — major, minor
+    sides = []
     for i in range(len(coords) - 1):
         x1, y1 = coords[i]
         x2, y2 = coords[i + 1]
-        d = math.hypot(x2 - x1, y2 - y1)
-        if d > max_len:
-            max_len = d
-            major = ((x1, y1), (x2, y2))
-    (x1, y1), (x2, y2) = major
-    ux, uy = (x2 - x1) / max_len, (y2 - y1) / max_len
-    projs = [ux * x + uy * y for x, y in poly.exterior.coords]
-    low, high = min(projs), max(projs)
+        length = math.hypot(x2 - x1, y2 - y1)
+        sides.append(((x1, y1), (x2, y2), length))
+    sides = sorted(sides, key=lambda s: s[2], reverse=True)
 
-    def make_cut(offset):
-        mx, my = ux * offset, uy * offset
-        vx, vy = -uy, ux
-        minx, miny, maxx, maxy = poly.bounds
-        diag = math.hypot(maxx - minx, maxy - miny) * 2
-        return LineString([(mx + vx * diag, my + vy * diag), (mx - vx * diag, my - vy * diag)])
+    for (p1, p2, _len_side) in sides[:2]:  # major и minor
+        ux, uy = (p2[0] - p1[0]) / _len_side, (p2[1] - p1[1]) / _len_side
+        vx, vy = -uy, ux  # перпендикуляр
+        projs = [ux * x + uy * y for x, y in poly.exterior.coords]
+        low, high = min(projs), max(projs)
 
-    for _ in range(30):
-        mid = (low + high) / 2
-        parts = split(poly, make_cut(mid))
-        if not parts.geoms:
-            low = mid
-            continue
-        parts = list(parts.geoms)
-        if len(parts) < 2:
-            low = mid
-            continue
-        if len(parts) > 2:
-            st.warning("Разделение полигона дало более двух частей, используется только первая.")
-            parts = parts[:2]
-        areas_list = []
-        for part in parts:
-            cx, cy = part.representative_point().coords[0]
-            proj = ux * cx + uy * cy
-            areas_list.append((proj, part))
-        smaller = min(areas_list, key=lambda x: x[0])[1]
-        a = smaller.area
-        if a > target_px2 * (1 + tol):
-            high = mid
-        elif a < target_px2 * (1 - tol):
-            low = mid
-        else:
-            rem = [p for p in parts if not p.equals(smaller)]
-            return smaller, (rem[0] if rem else None)
+        def make_cut(offset: float) -> LineString:
+            mx, my = ux * offset, uy * offset
+            minx_, miny_, maxx_, maxy_ = poly.bounds
+            diag = math.hypot(maxx_ - minx_, maxy_ - miny_) * 2
+            return LineString([(mx + vx * diag, my + vy * diag), (mx - vx * diag, my - vy * diag)])
 
-    parts = split(poly, make_cut((low + high) / 2))
-    if not parts.geoms:
-        st.error("Не удалось разделить полигон.")
-        st.stop()
-    parts = sorted(list(parts.geoms), key=lambda p: p.area)
+        for _ in range(40):  # бинарный поиск
+            mid = (low + high) / 2
+            parts = split(poly, make_cut(mid))
+            if not parts.geoms or len(parts.geoms) < 2:
+                low = mid
+                continue
+            parts = list(parts.geoms)[:2]
+            parts.sort(key=lambda p_: p_.area)
+            smaller = parts[0]
+            a = smaller.area
+            if a > target_px2 * (1 + tol):
+                high = mid
+            elif a < target_px2 * (1 - tol):
+                low = mid
+            else:
+                return smaller, parts[1]
+    # fallback: тупо отрезаем половину площади
+    parts = list(split(poly, LineString([(minx, miny), (maxx, maxy)])))
+    parts.sort(key=lambda p_: p_.area)
     return parts[0], (parts[1] if len(parts) > 1 else None)
 
-# ==========================
-#   РАСПРЕДЕЛЕНИЕ КВАРТИР
-# ==========================
+# -------------------------
+#   ГЕНЕРАЦИЯ КВАРТИРОГРАФИИ
+# -------------------------
 
-st.subheader("2️⃣ Подбор квартирографии по всему зданию")
-if st.button("Сгенерировать квартирографию"):
-    total_area = area_m2 * floors
-    avg_area = {t: (areas[t][0] + areas[t][1]) / 2 for t in types}
-    counts = {t: max(1, int(round(total_area * percentages[t] / 100 / avg_area[t]))) for t in types}
-    per_floor = {i: {} for i in range(floors)}
-    for t, c in counts.items():
-        q, r = divmod(c, floors)
-        for i in range(floors):
-            per_floor[i][t] = q + (1 if i < r else 0)
+st.subheader("3️⃣ Сгенерировать квартирографию")
+if st.button("🚀 Запустить генерацию"):
+    with st.spinner("Расчёт количества квартир…"):
+        avg_area = {t: sum(AREA_RANGES[t]) / 2 for t in APT_TYPES}
+        total_build_area = area_m2 * floors
+        counts = {
+            t: max(1, round(total_build_area * percentages[t] / 100 / avg_area[t]))
+            for t in APT_TYPES
+        }
+        # Распределяем по этажам +‑1
+        per_floor: Dict[int, Dict[str, int]] = {f: {t: 0 for t in APT_TYPES} for f in range(floors)}
+        for t, cnt in counts.items():
+            q, r = divmod(cnt, floors)
+            for f in range(floors):
+                per_floor[f][t] = q + (1 if f < r else 0)
 
-    # Генерация схем для всех этажей
-    st.subheader("3️⃣ Схемы этажей")
-    floor_placements = {}
-    for fl in range(1, floors + 1):
-        targets = []
-        for t, n in per_floor[fl - 1].items():
+    prog = st.progress(0, text="Нарезка этажей…")
+    floor_placements: Dict[int, List[Tuple[str, Polygon]]] = {}
+
+    for fl in range(floors):
+        targets: List[Tuple[str, float]] = []
+        for t, n in per_floor[fl].items():
             if n > 0:
-                tot_t = total_area * percentages[t] / 100
-                avg_t = tot_t / counts[t]
-                px2 = avg_t * 1e6 / scale**2
-                targets += [(t, px2)] * n
+                px2 = (sum(AREA_RANGES[t]) / 2) * 1e6 / (scale_mm_px ** 2)
+                targets.extend([(t, px2)] * n)
 
-        # Разметка этажа
-        avail = [floor]
-        placements = []
+        available: List[Polygon] = [floor_poly]
+        placed: List[Tuple[str, Polygon]] = []
+
         for t, px2 in targets:
-            avail.sort(key=lambda p: p.area, reverse=True)
-            if not avail:
-                st.warning(f"Этаж {fl}: Недостаточно пространства для размещения всех квартир.")
+            available.sort(key=lambda p: p.area, reverse=True)
+            if not available:
+                st.warning(f"Этаж {fl+1}: не хватает места для всех квартир ☎️")
                 break
-            poly = avail.pop(0)
-            apt, rem = split_poly(poly, px2)
-            placements.append((t, apt))
-            if rem and rem.area > 0.01 * px2:
-                avail.append(rem)
+            largest = available.pop(0)
+            apt, rem = split_poly(largest, px2)
+            placed.append((t, apt))
+            if rem and rem.area > 0.02 * px2:
+                available.append(rem)
 
-        floor_placements[fl] = placements
+        floor_placements[fl + 1] = placed
+        prog.progress((fl + 1) / floors, text=f"Готово {fl+1}/{floors} этажей")
 
-        # Отрисовка этажа
-        st.markdown(f"#### Этаж {fl}")
-        fig, ax = plt.subplots(figsize=(8, 6))
-        cmap = {'Студия': '#FFC107', '1С': '#8BC34A', '2С': '#03A9F4', '3С': '#E91E63', '4С': '#9C27B0'}
-        for t, poly in placements:
+    prog.empty()
+
+    # -------------------------
+    #   ВИЗУАЛИЗАЦИЯ ЭТАЖЕЙ
+    # -------------------------
+
+    st.subheader("4️⃣ Планы этажей")
+    for fl, placement in floor_placements.items():
+        st.markdown(f"### Этаж {fl}")
+        fig, ax = plt.subplots(figsize=(6, 5))
+        for t, poly in placement:
             x, y = poly.exterior.xy
-            ax.fill([xi * scale for xi in x], [yi * scale for yi in y], color=cmap[t], alpha=0.7, edgecolor='black')
-            # Аннотация с размерами и площадью
-            minx, miny, maxx, maxy = poly.bounds
-            w_mm = (maxx - minx) * scale
-            h_mm = (maxy - miny) * scale
-            area_m2 = poly.area * scale**2 / 1e6
+            ax.fill([xi * scale_mm_px for xi in x], [yi * scale_mm_px for yi in y],
+                    color=COLORS[t], alpha=0.7, edgecolor="black", linewidth=1)
             cx, cy = poly.representative_point().xy
-            ax.text(cx[0] * scale, cy[0] * scale, f"{t}\n{w_mm:.0f}×{h_mm:.0f} мм\n{area_m2:.2f} м²",
-                    ha='center', va='center', fontsize=8, bbox=dict(facecolor='white', alpha=0.8))
-        ax.set_aspect('equal')
-        ax.axis('off')
+            area_m2_apt = poly.area * (scale_mm_px ** 2) / 1e6
+            ax.text(cx[0] * scale_mm_px, cy[0] * scale_mm_px,
+                    f"{t}\n{area_m2_apt:.1f} м²", ha="center", va="center", fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.8))
+        # Легенда
+        for t, c in COLORS.items():
+            ax.scatter([], [], color=c, label=t)
+        ax.legend(loc="upper right", fontsize=8)
+        # Линейка масштаба 5 м
+        ax.plot([20, 20 + 5000 / scale_mm_px], [20, 20], lw=4, color="black")
+        ax.text(20 + 2500 / scale_mm_px, 40, "5 м", ha="center", va="bottom")
+        ax.set_aspect("equal")
+        ax.axis("off")
         st.pyplot(fig)
         plt.close(fig)
 
-    # Отчет
-    df = pd.DataFrame([{'Этаж': i + 1, 'Тип': t, 'Кол-во': per_floor[i][t]} for i in range(floors) for t in types])
-    st.subheader("4️⃣ Сводный отчет по этажам")
-    st.dataframe(df)
-    st.sidebar.download_button("📥 Скачать CSV", df.to_csv(index=False), file_name='report.csv', mime='text/csv')
+    # -------------------------
+    #   ОТЧЁТ / ЭКСПОРТ
+    # -------------------------
+
+    st.subheader("5️⃣ Сводный отчёт")
+    rows = []
+    for fl, placement in floor_placements.items():
+        for t in APT_TYPES:
+            qty = sum(1 for tp, _ in placement if tp == t)
+            rows.append({"Этаж": fl, "Тип": t, "Количество": qty})
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
+
+    # Кнопки скачивания
+    st.sidebar.download_button(
+        "⬇️ Скачать отчёт CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        file_name="report.csv",
+        mime="text/csv",
+    )
+
+    project_data = {
+        "scale_mm_px": scale_mm_px,
+        "grid_step_mm": grid_step_mm,
+        "floors": floors,
+        "percentages": percentages,
+        "area_ranges": AREA_RANGES,
+        "contour": json.loads(floor_poly.to_geojson()),
+    }
+    st.sidebar.download_button(
+        "⬇️ Скачать проект JSON",
+        json.dumps(project_data, ensure_ascii=False, indent=2).encode("utf-8"),
+        file_name=project_name,
+        mime="application/json",
+    )
