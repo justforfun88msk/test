@@ -1,68 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-Квартирография — интерактивный генератор квартирных планов
-=========================================================
-Полностью переработанная версия без известных багов.
+Квартирография — интерактивный генератор квартирных планов (Architect Edition)
+================================================================================
+Исправленная и оптимизированная версия 2025-06-17.
 
-🔧 Требования
--------------
-```
-pip install streamlit shapely matplotlib pandas streamlit-drawable-canvas
-```
-
-▶️ Запуск
----------
-```
-streamlit run kvartirografia.py
-```
-
-Главные улучшения
------------------
-1. **Двусторонний Canvas** на `streamlit‑drawable‑canvas` — никакого custom JS, данные сразу доступны в Python.
-2. **Привязка к сетке** действительно работает и может включаться/выключаться.
-3. **Undo/Clear** для холста.
-4. **Автоматическая нормализация процентов** — последний тип корректируется, чтобы сумма была 100 %.
-5. **Прогресс‑бар** при генерации этажей.
-6. **Сохранение проекта** и отчёта в JSON/CSV.
-7. **Кэширование тяжёлых операций** через `st.cache_data`.
-8. **Легенда цветов** и масштабная линейка.
+Основные улучшения:
+- Нормализация процентов в реальном времени.
+- Интерактивная визуализация с Plotly.
+- Проверка минимальных размеров в split_poly.
+- Валидация полигонов в процессе рисования.
+- Оптимизированная производительность и UX.
 """
-
-from __future__ import annotations
-import math
+import base64
 import json
-from typing import Dict, List, Tuple
+import math
+import random
+from io import BytesIO
+from typing import Dict, List, Optional, Tuple
 
-import streamlit as st
-from streamlit_drawable_canvas import st_canvas
-from shapely.geometry import Polygon, LineString, MultiPolygon
-from shapely.ops import split
-import matplotlib.pyplot as plt
 import pandas as pd
+import plotly.graph_objects as go
+import shapely
+import streamlit as st
+from PIL import Image, ImageDraw
+from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.ops import split
+from streamlit_drawable_canvas import st_canvas
 
-# -------------------------
-#   КОНФИГУРАЦИЯ СТРАНИЦЫ
-# -------------------------
-
+# Конфигурация страницы
 st.set_page_config(
     page_title="Квартирография Architect Edition",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📐 Квартирография — Architect Edition")
+st.title("📐 Квартирография — Architect Edition")
+st.markdown("Создавайте планы этажей, задавайте параметры квартир и генерируйте оптимальную квартирографию.")
 
-# -------------------------
-#   НАСТРОЙКИ В САЙДБАРЕ
-# -------------------------
-
-st.sidebar.header("🏢 Параметры здания и сетки")
-floors: int = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
-scale_mm_px: float = st.sidebar.number_input("Миллиметров в 1 пикселе", min_value=0.1, value=10.0, step=0.1)
-grid_step_mm: int = st.sidebar.number_input("Шаг сетки, мм", min_value=5, value=100, step=5)
-show_snap: bool = st.sidebar.checkbox("Привязка к сетке", value=True)
-
-# Apartment types and settings
+# Константы
 APT_TYPES = ["Студия", "1С", "2С", "3С", "4С"]
 COLORS = {
     "Студия": "#FFC107",
@@ -71,329 +46,392 @@ COLORS = {
     "3С": "#E91E63",
     "4С": "#9C27B0",
 }
+CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
+MIN_APT_DIM_MM = 1000  # Минимальная ширина/длина квартиры (1 м)
+MIN_FLOOR_AREA_M2 = 10  # Минимальная площадь этажа после вычитания МОП
 
-st.sidebar.header("🏠 Распределение квартир (проценты)")
+# Sidebar: Настройки
+st.sidebar.header("🏢 Параметры здания и сетки")
+floors: int = st.sidebar.number_input("Этажей в доме", min_value=1, value=10, step=1)
+scale_mm_px: float = st.sidebar.number_input(
+    "Масштаб (мм на пиксель)", min_value=0.1, value=10.0, step=0.1
+)
+grid_step_mm: int = st.sidebar.number_input(
+    "Шаг сетки (мм)", min_value=5, value=100, step=5
+)
+grid_snap: bool = st.sidebar.checkbox("Привязка к сетке", value=True)
 
+st.sidebar.header("🏠 Распределение квартир")
 def apartment_percentages() -> Dict[str, float]:
-    """Collect user‑defined percentages and auto‑normalize the last one."""
-    inputs = []
-    for t in APT_TYPES[:-1]:
-        val = st.sidebar.number_input(f"% {t}", 0.0, 100.0, 100.0 / len(APT_TYPES), step=1.0, key=f"pct_{t}")
-        inputs.append(val)
-    sum_inputs = sum(inputs)
-    last_val = max(0.0, 100.0 - sum_inputs)
-    st.sidebar.markdown(f"**% {APT_TYPES[-1]}:** `{last_val:.1f}` (авто) ")
-    if sum_inputs > 100:
-        st.sidebar.error("Сумма первых четырёх типов > 100 %. Уменьшите значения.")
-    return {t: v for t, v in zip(APT_TYPES, inputs + [last_val])}
+    """Собирает проценты с нормализацией."""
+    percentages = {}
+    total = 0
+    cols = st.sidebar.columns(2)
+    for i, t in enumerate(APT_TYPES):
+        with cols[i % 2]:
+            val = st.number_input(
+                f"% {t}", 0.0, 100.0, 100.0 / len(APT_TYPES), step=1.0, key=f"pct_{t}"
+            )
+            percentages[t] = val
+            total += val
+    if abs(total - 100) > 0.01:
+        st.sidebar.warning(f"Сумма ({total:.1f}%) нормализована до 100%.")
+        for t in percentages:
+            percentages[t] = percentages[t] * 100 / total if total > 0 else 100 / len(APT_TYPES)
+    color = "green" if abs(total - 100) <= 0.01 else "orange"
+    st.sidebar.markdown(f"<p style='color:{color};'>Сумма: {total:.1f}%</p>", unsafe_allow_html=True)
+    return percentages
 
 percentages: Dict[str, float] = apartment_percentages()
 
 st.sidebar.subheader("📏 Диапазоны площадей (м²)")
 AREA_RANGES: Dict[str, Tuple[float, float]] = {}
 for t in APT_TYPES:
-    AREA_RANGES[t] = st.sidebar.slider(t, 10.0, 200.0, (20.0, 50.0), key=f"area_{t}")
+    lo, hi = st.sidebar.slider(t, 1.0, 200.0, (20.0, 50.0), key=f"area_{t}")
+    if lo >= hi:
+        st.sidebar.error(f"Для {t} минимальная площадь не может быть больше или равна максимальной.")
+        lo = hi - 1 if hi > 1 else 1
+    if lo < 1:
+        st.sidebar.warning(f"Минимальная площадь для {t} установлена в 1 м².")
+        lo = 1
+    AREA_RANGES[t] = (lo, hi)
 
-st.sidebar.header("💾 Файлы проекта")
-project_name: str = st.sidebar.text_input("Имя файла проекта", "plan.json")
+# Canvas Helpers
+GRID_PX = grid_step_mm / scale_mm_px
 
-# -------------------------
-#   ХУЛОЖЕСТВЕННАЯ ЧАСТЬ
-# -------------------------
+@st.cache_data(show_spinner=False)
+def make_grid_png(width: int, height: int, step_px: float) -> str:
+    """Генерирует PNG-сетку как base64."""
+    step_px = max(5, step_px)  # Минимальный шаг для видимости
+    img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    for x in range(0, width, int(step_px)):
+        draw.line([(x, 0), (x, height)], fill=(227, 227, 227, 255))
+    for y in range(0, height, int(step_px)):
+        draw.line([(0, y), (width, y)], fill=(227, 227, 227, 255))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
 
+bg_png_b64 = make_grid_png(CANVAS_WIDTH, CANVAS_HEIGHT, GRID_PX)
+
+# Сериализация полигонов
+def poly_to_wkb(p: Polygon) -> bytes:
+    return p.wkb
+
+def poly_from_wkb(b: bytes) -> Polygon:
+    return shapely.wkb.loads(b)
+
+# Извлечение полигонов из FabricJS
+def _extract_user_polygons(json_data: dict) -> List[Polygon]:
+    polys: List[Polygon] = []
+    if not json_data:
+        return polys
+    for obj in json_data.get("objects", []):
+        pts: Optional[List[Tuple[float, float]]] = None
+        if obj.get("type") == "path":
+            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
+            if pts and pts[0] != pts[-1]:
+                pts.append(pts[0])
+        elif obj.get("type") == "polygon":
+            pts = [(p[0], p[1]) for p in obj["points"]]
+        if pts and len(pts) >= 3:
+            if grid_snap:
+                pts = [
+                    (round(x / GRID_PX) * GRID_PX, round(y / GRID_PX) * GRID_PX)
+                    for x, y in pts
+                ]
+            try:
+                poly = Polygon(pts)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)  # Попытка исправить самопересечения
+                    if not poly.is_valid:
+                        continue
+                polys.append(poly)
+            except ValueError:
+                continue
+    return polys
+
+# Рисование внешнего контура
 st.subheader("1️⃣ Нарисуйте внешний контур этажа")
-CANVAS_WIDTH, CANVAS_HEIGHT = 800, 600
-GRID_PX = grid_step_mm / scale_mm_px  # пикселей
+st.markdown("Нарисуйте **один** замкнутый полигон. Используйте кнопку 'Сохранить контур' для продолжения.")
 
-# Helper — draw background grid
-def make_grid() -> List[dict]:
-    """Return FabricJS objects for grid (as data URL strings)."""
-    objs = []
-    if GRID_PX < 5:  # не рисуем слишком частую сетку
-        return objs
-    # вертикальные линии
-    for x in range(0, int(CANVAS_WIDTH), int(GRID_PX)):
-        objs.append({
-            "type": "line",
-            "x1": x,
-            "y1": 0,
-            "x2": x,
-            "y2": CANVAS_HEIGHT,
-            "stroke": "#e3e3e3",
-            "strokeWidth": 1,
-            "selectable": False,
-        })
-    # горизонтальные линии
-    for y in range(0, int(CANVAS_HEIGHT), int(GRID_PX)):
-        objs.append({
-            "type": "line",
-            "x1": 0,
-            "y1": y,
-            "x2": CANVAS_WIDTH,
-            "y2": y,
-            "stroke": "#e3e3e3",
-            "strokeWidth": 1,
-            "selectable": False,
-        })
-    return objs
-
-bg_objects = make_grid()
-
-# Canvas for outer contour
 contour_json = st_canvas(
-    fill_color="rgba(0, 0, 0, 0)",  # hollow polygons
+    fill_color="rgba(0,0,0,0)",
     stroke_width=2,
     stroke_color="#000000",
-    background_color="#ffffff",
+    background_image=f"data:image/png;base64,{bg_png_b64}",
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
     drawing_mode="polygon",
-    initial_drawing=bg_objects,
     key="contour_canvas",
 )
 
-st.caption("Нарисуйте **один** замкнутый полигон. Затем нажмите кнопку ниже.")
+if "contour_poly_wkb" not in st.session_state:
+    st.session_state["contour_poly_wkb"] = None
 
-if "contour_poly" not in st.session_state:
-    st.session_state.contour_poly = None
+contour_polys = _extract_user_polygons(contour_json.json_data)
+if contour_polys and not all(p.is_valid for p in contour_polys):
+    st.warning("Обнаружен некорректный полигон (например, самопересечение). Исправьте контур.")
 
-if st.button("📌 Сохранить контур", disabled=not contour_json.json_data):
-    # Extract first polygon/path
-    def _extract_pts(obj: dict) -> List[Tuple[float, float]] | None:
-        if obj.get("type") == "path":
-            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
-            return pts
-        if obj.get("type") == "polygon":
-            return [(p[0], p[1]) for p in obj["points"]]
-        return None
+save_contour = st.button(
+    "📌 Сохранить контур",
+    disabled=not contour_polys or not all(p.is_valid for p in contour_polys),
+)
+if st.button("🗑 Очистить контур"):
+    st.session_state["contour_poly_wkb"] = None
+    st.experimental_rerun()
 
-    polygons_px = []
-    for obj in contour_json.json_data.get("objects", []):
-        pts = _extract_pts(obj)
-        if pts and len(pts) >= 3:
-            # Snap if enabled
-            if show_snap:
-                pts = [(
-                    round(x / GRID_PX) * GRID_PX,
-                    round(y / GRID_PX) * GRID_PX,
-                ) for x, y in pts]
-            polygons_px.append(Polygon(pts))
-
-    if not polygons_px:
-        st.warning("Не найдено корректных полигонов.")
-    elif len(polygons_px) > 1:
+if save_contour:
+    if len(contour_polys) > 1:
         st.warning("Найдены несколько полигонов. Используется первый.")
-        st.session_state.contour_poly = polygons_px[0]
-    else:
-        st.session_state.contour_poly = polygons_px[0]
+    st.session_state["contour_poly_wkb"] = poly_to_wkb(contour_polys[0])
+    st.experimental_rerun()
 
-# Canvas for holes (optional)
+# Рисование зон МОП
 st.subheader("2️⃣ Нарисуйте зоны МОП (необязательно)")
+st.markdown("Нарисуйте замкнутые полигоны для зон МОП. Добавляйте по одной зоне кнопкой 'Добавить МОП'.")
+
 holes_json = st_canvas(
     fill_color="rgba(255,0,0,0.3)",
     stroke_width=2,
     stroke_color="#ff0000",
-    background_color="#ffffff",
+    background_image=f"data:image/png;base64,{bg_png_b64}",
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
     drawing_mode="polygon",
-    initial_drawing=bg_objects,
     key="holes_canvas",
 )
 
-if "holes_polys" not in st.session_state:
-    st.session_state.holes_polys: List[Polygon] = []
+if "holes_polys_wkb" not in st.session_state:
+    st.session_state["holes_polys_wkb"] = []
 
-if st.button("➕ Добавить МОП", disabled=not holes_json.json_data):
-    def _extract_pts(obj: dict) -> List[Tuple[float, float]] | None:
-        if obj.get("type") == "path":
-            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
-            return pts
-        if obj.get("type") == "polygon":
-            return [(p[0], p[1]) for p in obj["points"]]
-        return None
+holes_polys = _extract_user_polygons(holes_json.json_data)
+if holes_polys and not all(p.is_valid for p in holes_polys):
+    st.warning("Обнаружена некорректная зона МОП. Исправьте полигон.")
 
-    new_holes = []
-    for obj in holes_json.json_data.get("objects", []):
-        pts = _extract_pts(obj)
-        if pts and len(pts) >= 3:
-            if show_snap:
-                pts = [(
-                    round(x / GRID_PX) * GRID_PX,
-                    round(y / GRID_PX) * GRID_PX,
-                ) for x, y in pts]
-            new_holes.append(Polygon(pts))
-    st.session_state.holes_polys.extend(new_holes)
+add_hole = st.button(
+    "➕ Добавить МОП",
+    disabled=not holes_polys or not all(p.is_valid for p in holes_polys),
+)
+if add_hole:
+    st.session_state["holes_polys_wkb"].extend(poly_to_wkb(h) for h in holes_polys)
+    st.experimental_rerun()
 
-# -------------------------
-#   ВАЛИДАЦИЯ ПОЛИГОНОВ
-# -------------------------
+if st.session_state["holes_polys_wkb"]:
+    if st.button("🗑 Очистить МОП"):
+        st.session_state["holes_polys_wkb"].clear()
+        st.experimental_rerun()
 
-if st.session_state.contour_poly is None:
-    st.info("Нарисуйте и сохраните внешний контур, затем МОЖНО добавить зоны МОП.")
+# Валидация полигонов
+if st.session_state["contour_poly_wkb"] is None:
+    st.info("Нарисуйте и сохраните внешний контур, затем можно добавить зоны МОП.")
     st.stop()
 
-outer = st.session_state.contour_poly
-if not outer.is_valid or not outer.is_simple:
-    st.error("Внешний контур некорректен (самопересечения и т. п.).")
+outer: Polygon = poly_from_wkb(st.session_state["contour_poly_wkb"])
+if not outer.is_valid:
+    st.error("Внешний контур некорректен. Перерисуйте контур.")
     st.stop()
 
-# Вычитаем дыры
 floor_poly: Polygon | MultiPolygon = outer
-for h in st.session_state.holes_polys:
+for h_wkb in st.session_state["holes_polys_wkb"]:
+    h = poly_from_wkb(h_wkb)
     if h.is_valid:
         floor_poly = floor_poly.difference(h)
+
+if isinstance(floor_poly, MultiPolygon):
+    st.warning("После вычитания МОП получено несколько зон. Используется самая большая.")
+    floor_poly = max(floor_poly.geoms, key=lambda p: p.area)
 
 if floor_poly.is_empty:
     st.error("После вычитания МОП не осталось площади этажа!")
     st.stop()
 
-# -------------------------
-#   МЕТРИКА ЭТАЖА
-# -------------------------
+area_m2 = floor_poly.area * (scale_mm_px ** 2) / 1e6
+if area_m2 < MIN_FLOOR_AREA_M2:
+    st.error(f"Площадь этажа ({area_m2:.2f} м²) слишком мала. Уменьшите зоны МОП или увеличьте контур.")
+    st.stop()
 
+# Метрики этажа
 minx, miny, maxx, maxy = floor_poly.bounds
 width_mm = (maxx - minx) * scale_mm_px
 height_mm = (maxy - miny) * scale_mm_px
-area_m2 = floor_poly.area * (scale_mm_px ** 2) / 1e6
-st.success(f"Контур: **{width_mm:.0f} × {height_mm:.0f} мм**, площадь **{area_m2:.2f} м²**")
+st.success(
+    f"Контур: **{width_mm:.0f} × {height_mm:.0f} мм**, площадь **{area_m2:.2f} м²**"
+)
 
-# --------------------------------------------------------------------
-#   АЛГОРИТМ РАЗБИВКИ (split_poly) — улучшенная версия с 2 ориентациями
-# --------------------------------------------------------------------
+# Функция разделения полигона
+@st.cache_data(show_spinner=False)
+def split_poly(poly_wkb: bytes, target_px2: float, tol: float = 0.05) -> Tuple[bytes, Optional[bytes]]:
+    poly = poly_from_wkb(poly_wkb)
+    if isinstance(poly, MultiPolygon):
+        poly = max(poly.geoms, key=lambda p: p.area)
 
-def split_poly(poly: Polygon, target_px2: float, tol: float = 0.05) -> Tuple[Polygon, Polygon | None]:
-    """Разбить `poly` на часть ≈ target_px2 px².
-    Пробуем 2 ориентации (по длинной и короткой стороне MBR).
-    Возвращаем (квартира, остаток|None).
-    """
     mrr = poly.minimum_rotated_rectangle
     coords = list(mrr.exterior.coords)
-    # Две стороны — major, minor
-    sides = []
+    sides: List[Tuple[Tuple[float, float], Tuple[float, float], float]] = []
     for i in range(len(coords) - 1):
         x1, y1 = coords[i]
         x2, y2 = coords[i + 1]
         length = math.hypot(x2 - x1, y2 - y1)
         sides.append(((x1, y1), (x2, y2), length))
-    sides = sorted(sides, key=lambda s: s[2], reverse=True)
+    sides.sort(key=lambda s: s[2], reverse=True)
 
-    for (p1, p2, _len_side) in sides[:2]:  # major и minor
-        ux, uy = (p2[0] - p1[0]) / _len_side, (p2[1] - p1[1]) / _len_side
-        vx, vy = -uy, ux  # перпендикуляр
+    max_iter = max(20, int(math.log2(max(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1])) + 10))
+    for (p1, p2, len_side) in sides[:2]:
+        ux, uy = (p2[0] - p1[0]) / len_side, (p2[1] - p1[1]) / len_side
+        vx, vy = -uy, ux
         projs = [ux * x + uy * y for x, y in poly.exterior.coords]
         low, high = min(projs), max(projs)
+        precision = min(1e-3, (high - low) / 1000)
 
         def make_cut(offset: float) -> LineString:
             mx, my = ux * offset, uy * offset
             minx_, miny_, maxx_, maxy_ = poly.bounds
             diag = math.hypot(maxx_ - minx_, maxy_ - miny_) * 2
-            return LineString([(mx + vx * diag, my + vy * diag), (mx - vx * diag, my - vy * diag)])
+            return LineString(
+                [(mx + vx * diag, my + vy * diag), (mx - vx * diag, my - vy * diag)]
+            )
 
-        for _ in range(40):  # бинарный поиск
+        for _ in range(max_iter):
             mid = (low + high) / 2
             parts = split(poly, make_cut(mid))
             if not parts.geoms or len(parts.geoms) < 2:
                 low = mid
+                if abs(high - low) < precision:
+                    break
                 continue
             parts = list(parts.geoms)[:2]
             parts.sort(key=lambda p_: p_.area)
             smaller = parts[0]
             a = smaller.area
+            minx_s, miny_s, maxx_s, maxy_s = smaller.bounds
+            w_mm = (maxx_s - minx_s) * scale_mm_px
+            h_mm = (maxy_s - miny_s) * scale_mm_px
+            if w_mm < MIN_APT_DIM_MM or h_mm < MIN_APT_DIM_MM:
+                high = mid
+                continue
             if a > target_px2 * (1 + tol):
                 high = mid
             elif a < target_px2 * (1 - tol):
                 low = mid
             else:
-                return smaller, parts[1]
-    # fallback: тупо отрезаем половину площади
-    parts = list(split(poly, LineString([(minx, miny), (maxx, maxy)])))
+                return poly_to_wkb(smaller), poly_to_wkb(parts[1])
+            if abs(high - low) < precision:
+                break
+
+    st.warning("Не удалось разделить полигон идеально. Используется резервный разрез.")
+    minx_, miny_, maxx_, maxy_ = poly.bounds
+    parts = list(split(poly, LineString([(minx_, miny_), (maxx_, maxy_)])))
     parts.sort(key=lambda p_: p_.area)
-    return parts[0], (parts[1] if len(parts) > 1 else None)
+    if len(parts) == 1:
+        return poly_to_wkb(parts[0]), None
+    return poly_to_wkb(parts[0]), poly_to_wkb(parts[1])
 
-# -------------------------
-#   ГЕНЕРАЦИЯ КВАРТИРОГРАФИИ
-# -------------------------
-
+# Генерация квартирографии
 st.subheader("3️⃣ Сгенерировать квартирографию")
-if st.button("🚀 Запустить генерацию"):
-    with st.spinner("Расчёт количества квартир…"):
+if st.button("🚀 Запустить генерацию", disabled=not any(percentages.values())):
+    if not any(percentages.values()):
+        st.error("Задайте ненулевой процент хотя бы для одного типа квартир.")
+        st.stop()
+
+    with st.spinner("Расчет количества квартир..."):
         avg_area = {t: sum(AREA_RANGES[t]) / 2 for t in APT_TYPES}
         total_build_area = area_m2 * floors
-        counts = {
-            t: max(1, round(total_build_area * percentages[t] / 100 / avg_area[t]))
+        counts_target = {
+            t: round(total_build_area * percentages[t] / 100 / avg_area[t])
             for t in APT_TYPES
         }
-        # Распределяем по этажам +‑1
         per_floor: Dict[int, Dict[str, int]] = {f: {t: 0 for t in APT_TYPES} for f in range(floors)}
-        for t, cnt in counts.items():
+        for t, cnt in counts_target.items():
+            if cnt == 0:
+                continue
             q, r = divmod(cnt, floors)
             for f in range(floors):
                 per_floor[f][t] = q + (1 if f < r else 0)
 
-    prog = st.progress(0, text="Нарезка этажей…")
-    floor_placements: Dict[int, List[Tuple[str, Polygon]]] = {}
+    prog = st.progress(0, text="Нарезка этажей...")
+    floor_placements: Dict[int, List[Tuple[str, bytes]]] = {}
+    missing: Dict[str, int] = {t: 0 for t in APT_TYPES}
+    floor_poly_wkb = poly_to_wkb(floor_poly)
 
     for fl in range(floors):
         targets: List[Tuple[str, float]] = []
         for t, n in per_floor[fl].items():
-            if n > 0:
-                px2 = (sum(AREA_RANGES[t]) / 2) * 1e6 / (scale_mm_px ** 2)
-                targets.extend([(t, px2)] * n)
-
-        available: List[Polygon] = [floor_poly]
-        placed: List[Tuple[str, Polygon]] = []
-
+            for _ in range(n):
+                m2 = random.uniform(*AREA_RANGES[t])
+                px2 = m2 * 1e6 / (scale_mm_px ** 2)
+                targets.append((t, px2))
+        available: List[bytes] = [floor_poly_wkb]
+        placed: List[Tuple[str, bytes]] = []
         for t, px2 in targets:
-            available.sort(key=lambda p: p.area, reverse=True)
+            available.sort(key=lambda p: poly_from_wkb(p).area, reverse=True)
             if not available:
-                st.warning(f"Этаж {fl+1}: не хватает места для всех квартир ☎️")
-                break
+                missing[t] += 1
+                continue
             largest = available.pop(0)
-            apt, rem = split_poly(largest, px2)
-            placed.append((t, apt))
-            if rem and rem.area > 0.02 * px2:
-                available.append(rem)
-
+            apt_wkb, rem_wkb = split_poly(largest, px2)
+            placed.append((t, apt_wkb))
+            if rem_wkb and poly_from_wkb(rem_wkb).area > 0.02 * px2:
+                available.append(rem_wkb)
         floor_placements[fl + 1] = placed
-        prog.progress((fl + 1) / floors, text=f"Готово {fl+1}/{floors} этажей")
+        prog.progress((fl + 1) / floors, text=f"Готово {fl + 1}/{floors} этажей")
 
     prog.empty()
 
-    # -------------------------
-    #   ВИЗУАЛИЗАЦИЯ ЭТАЖЕЙ
-    # -------------------------
-
+    # Визуализация с Plotly
     st.subheader("4️⃣ Планы этажей")
     for fl, placement in floor_placements.items():
-        st.markdown(f"### Этаж {fl}")
-        fig, ax = plt.subplots(figsize=(6, 5))
-        for t, poly in placement:
+        st.markdown(f"### Этаж {fl}")
+        fig = go.Figure()
+        for t, poly_wkb in placement:
+            poly = poly_from_wkb(poly_wkb)
             x, y = poly.exterior.xy
-            ax.fill([xi * scale_mm_px for xi in x], [yi * scale_mm_px for yi in y],
-                    color=COLORS[t], alpha=0.7, edgecolor="black", linewidth=1)
-            cx, cy = poly.representative_point().xy
             area_m2_apt = poly.area * (scale_mm_px ** 2) / 1e6
-            ax.text(cx[0] * scale_mm_px, cy[0] * scale_mm_px,
-                    f"{t}\n{area_m2_apt:.1f} м²", ha="center", va="center", fontsize=8,
-                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.8))
+            minx_a, miny_a, maxx_a, maxy_a = poly.bounds
+            w_mm = (maxx_a - minx_a) * scale_mm_px
+            h_mm = (maxy_a - miny_a) * scale_mm_px
+            fig.add_trace(go.Scatter(
+                x=[xi * scale_mm_px for xi in x],
+                y=[yi * scale_mm_px for yi in y],
+                fill="toself",
+                fillcolor=COLORS[t],
+                line_color="black",
+                opacity=0.7,
+                text=f"{t}<br>{w_mm:.0f}×{h_mm:.0f} мм<br>{area_m2_apt:.2f} м²",
+                hoverinfo="text"
+            ))
+        # Масштабная линейка 5 м
+        x0 = minx * scale_mm_px + 20
+        fig.add_trace(go.Scatter(
+            x=[x0, x0 + 5000],
+            y=[20, 20],
+            mode="lines+text",
+            line=dict(color="black", width=4),
+            text=["", "5 м"],
+            textposition="top center",
+            showlegend=False
+        ))
         # Легенда
         for t, c in COLORS.items():
-            ax.scatter([], [], color=c, label=t)
-        ax.legend(loc="upper right", fontsize=8)
-        # Линейка масштаба 5 м
-        ax.plot([20, 20 + 5000 / scale_mm_px], [20, 20], lw=4, color="black")
-        ax.text(20 + 2500 / scale_mm_px, 40, "5 м", ha="center", va="bottom")
-        ax.set_aspect("equal")
-        ax.axis("off")
-        st.pyplot(fig)
-        plt.close(fig)
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None],
+                mode="markers",
+                marker=dict(color=c, size=10),
+                name=t,
+                showlegend=True
+            ))
+        fig.update_layout(
+            showlegend=True,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False, scaleanchor="x"),
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=600
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    # -------------------------
-    #   ОТЧЁТ / ЭКСПОРТ
-    # -------------------------
-
-    st.subheader("5️⃣ Сводный отчёт")
+    # Сводный отчет
+    st.subheader("5️⃣ Сводный отчет")
     rows = []
     for fl, placement in floor_placements.items():
         for t in APT_TYPES:
@@ -402,25 +440,13 @@ if st.button("🚀 Запустить генерацию"):
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True)
 
-    # Кнопки скачивания
-    st.sidebar.download_button(
-        "⬇️ Скачать отчёт CSV",
+    if any(missing.values()):
+        miss_txt = ", ".join(f"{t}: {n}" for t, n in missing.items() if n)
+        st.warning(f"⚠️ Не удалось разместить: {miss_txt}")
+
+    st.download_button(
+        "⬇️ Скачать отчет CSV",
         df.to_csv(index=False).encode("utf-8"),
         file_name="report.csv",
         mime="text/csv",
-    )
-
-    project_data = {
-        "scale_mm_px": scale_mm_px,
-        "grid_step_mm": grid_step_mm,
-        "floors": floors,
-        "percentages": percentages,
-        "area_ranges": AREA_RANGES,
-        "contour": json.loads(floor_poly.to_geojson()),
-    }
-    st.sidebar.download_button(
-        "⬇️ Скачать проект JSON",
-        json.dumps(project_data, ensure_ascii=False, indent=2).encode("utf-8"),
-        file_name=project_name,
-        mime="application/json",
     )
