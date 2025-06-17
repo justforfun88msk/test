@@ -99,7 +99,7 @@ canvas = st_canvas(
     drawing_mode='polygon',
     key='canvas',
     grid_color='#cccccc',
-    grid_spacing=int(grid_size_mm * scale_px_per_mm),
+    grid_spacing=(int(grid_size_mm * scale_px_per_mm), int(grid_size_mm * scale_px_per_mm)),
     grid_width=1
 )
 
@@ -136,7 +136,9 @@ if st.button('Сгенерировать квартирографию'):
                     rect = Rectangle((x, y), w, h, facecolor=cmap(idx_map[t]), edgecolor='black', alpha=0.7)
                     ax.add_patch(rect)
                     ax.text(x + w/2, y + h/2,
-                            f"{t}\n{int(w*scale_px_per_mm)}×{int(h*scale_px_per_mm)} мм\n{a/1e6:.1f} м²",
+                            f"{t}
+{int(w*scale_px_per_mm)}×{int(h*scale_px_per_mm)} мм
+{a/1e6:.1f} м²",
                             ha='center', va='center', fontsize=6)
                 ax.set_aspect('equal')
                 ax.invert_yaxis()
