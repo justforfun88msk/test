@@ -2,11 +2,9 @@
 """
 Квартирография — интерактивный генератор квартирных планов (Architect Edition)
 ================================================================================
-Исправленная версия 2025-06-17. Совместима с streamlit-drawable-canvas==0.9.3,
-использует matplotlib вместо plotly, устранены все баги.
+Исправленная версия 2025-06-17. Устранена ошибка AttributeError в st_canvas,
+совместима с streamlit-drawable-canvas==0.9.3, использует matplotlib.
 """
-import base64
-import json
 import math
 import random
 from io import BytesIO
@@ -94,8 +92,8 @@ for t in APT_TYPES:
 GRID_PX = grid_step_mm / scale_mm_px
 
 @st.cache_data(show_spinner=False)
-def make_grid_png(width: int, height: int, step_px: float) -> str:
-    """Генерирует PNG-сетку как base64."""
+def make_grid_image(width: int, height: int, step_px: float) -> Image.Image:
+    """Генерирует изображение сетки как объект PIL.Image."""
     step_px = max(5, step_px)  # Минимальный шаг для видимости
     img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
@@ -103,11 +101,9 @@ def make_grid_png(width: int, height: int, step_px: float) -> str:
         draw.line([(x, 0), (x, height)], fill=(227, 227, 227, 255))
     for y in range(0, height, int(step_px)):
         draw.line([(0, y), (width, y)], fill=(227, 227, 227, 255))
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode()
+    return img
 
-bg_png_b64 = make_grid_png(CANVAS_WIDTH, CANVAS_HEIGHT, GRID_PX)
+bg_grid = make_grid_image(CANVAS_WIDTH, CANVAS_HEIGHT, GRID_PX)
 
 # Сериализация полигонов
 def poly_to_wkb(p: Polygon) -> bytes:
@@ -116,7 +112,7 @@ def poly_to_wkb(p: Polygon) -> bytes:
 def poly_from_wkb(b: bytes) -> Polygon:
     return shapely.wkb.loads(b)
 
-# Извлечение полигонов из FabricJS
+# Извлечение полигонов из данных Fabric.js
 def _extract_user_polygons(json_data: dict) -> List[Polygon]:
     polys: List[Polygon] = []
     if not json_data or not json_data.get("objects"):
@@ -155,7 +151,7 @@ contour_json = st_canvas(
     stroke_width=2,
     stroke_color="#000000",
     background_color="transparent",
-    background_image=f"data:image/png;base64,{bg_png_b64}",
+    background_image=bg_grid,
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
     drawing_mode="polygon",
@@ -166,7 +162,7 @@ if "contour_poly_wkb" not in st.session_state:
     st.session_state["contour_poly_wkb"] = None
 
 contour_polys = _extract_user_polygons(contour_json.json_data)
-if contour_polys and not all(p.is_valid for p in contour_polys):
+if contour_json.json_data and contour_polys and not all(p.is_valid for p in contour_polys):
     st.warning("Обнаружен некорректный полигон (например, самопересечение). Исправьте контур.")
 
 save_contour = st.button(
@@ -192,7 +188,7 @@ holes_json = st_canvas(
     stroke_width=2,
     stroke_color="#ff0000",
     background_color="transparent",
-    background_image=f"data:image/png;base64,{bg_png_b64}",
+    background_image=bg_grid,
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
     drawing_mode="polygon",
@@ -203,7 +199,7 @@ if "holes_polys_wkb" not in st.session_state:
     st.session_state["holes_polys_wkb"] = []
 
 holes_polys = _extract_user_polygons(holes_json.json_data)
-if holes_polys and not all(p.is_valid for p in holes_polys):
+if holes_json.json_data and holes_polys and not all(p.is_valid for p in holes_polys):
     st.warning("Обнаружена некорректная зона МОП. Исправьте полигон.")
 
 add_hole = st.button(
