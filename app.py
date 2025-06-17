@@ -49,27 +49,15 @@ proj_name = st.sidebar.text_input("Имя проекта (JSON)", "plan.json")
 st.subheader("1️⃣ Нарисуйте план этажа")
 st.markdown("Первый полигон — внешний контур; остальные — зоны МОП.")
 canvas_data = st_canvas(
-    stroke_width=2,
-    stroke_color='#000',
-    fill_color='rgba(255,165,0,0.3)',
-    background_color='#F0F0F0',
-    drawing_mode='polygon',
-    key='canvas',
-    width=800, height=600,
-    grid_color='#DDD', grid_spacing=int(grid_mm/scale)
-)
-# Экспорт/Импорт проекта
-if canvas_data.json_data:
-    js = json.dumps(canvas_data.json_data)
-    st.sidebar.download_button("💾 Экспорт JSON", js, file_name=proj_name, mime="application/json")
-uploaded = st.sidebar.file_uploader("📂 Импорт JSON", type=['json'])
-if uploaded:
-    initial = json.load(uploaded)
-    canvas_data = st_canvas(
-        stroke_width=2, stroke_color='#000', fill_color='rgba(255,165,0,0.3)',
-        background_color='#F0F0F0', drawing_mode='polygon', key='canvas2',
-        width=800, height=600, initial_drawing=initial,
-        grid_color='#DDD', grid_spacing=int(grid_mm/scale)
+        stroke_width=2,
+        stroke_color='#000',
+        fill_color='rgba(255,165,0,0.3)',
+        background_color='#F0F0F0',
+        drawing_mode='polygon',
+        key='canvas2',
+        width=800, height=600,
+        initial_drawing=initial
+    )
     )
 
 # ==========================
