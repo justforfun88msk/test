@@ -2,14 +2,8 @@
 """
 Квартирография — интерактивный генератор квартирных планов (Architect Edition)
 ================================================================================
-Исправленная и оптимизированная версия 2025-06-17.
-
-Основные улучшения:
-- Нормализация процентов в реальном времени.
-- Интерактивная визуализация с Plotly.
-- Проверка минимальных размеров в split_poly.
-- Валидация полигонов в процессе рисования.
-- Оптимизированная производительность и UX.
+Исправленная версия 2025-06-17. Устранена ошибка TypeError в st_canvas,
+добавлены проверки совместимости, улучшена надежность и UX.
 """
 import base64
 import json
@@ -125,16 +119,16 @@ def poly_from_wkb(b: bytes) -> Polygon:
 # Извлечение полигонов из FabricJS
 def _extract_user_polygons(json_data: dict) -> List[Polygon]:
     polys: List[Polygon] = []
-    if not json_data:
+    if not json_data or not json_data.get("objects"):
         return polys
-    for obj in json_data.get("objects", []):
+    for obj in json_data["objects"]:
         pts: Optional[List[Tuple[float, float]]] = None
         if obj.get("type") == "path":
-            pts = [(cmd[1], cmd[2]) for cmd in obj["path"] if cmd[0] in ("M", "L")]
-            if pts and pts[0] != pts[-1]:
+            pts = [(cmd[1], cmd[2]) for cmd in obj.get("path", []) if cmd[0] in ("M", "L")]
+            if pts and len(pts) >= 3 and pts[0] != pts[-1]:
                 pts.append(pts[0])
         elif obj.get("type") == "polygon":
-            pts = [(p[0], p[1]) for p in obj["points"]]
+            pts = [(p[0], p[1]) for p in obj.get("points", [])]
         if pts and len(pts) >= 3:
             if grid_snap:
                 pts = [
@@ -144,7 +138,7 @@ def _extract_user_polygons(json_data: dict) -> List[Polygon]:
             try:
                 poly = Polygon(pts)
                 if not poly.is_valid:
-                    poly = poly.buffer(0)  # Попытка исправить самопересечения
+                    poly = poly.buffer(0)
                     if not poly.is_valid:
                         continue
                 polys.append(poly)
@@ -160,6 +154,7 @@ contour_json = st_canvas(
     fill_color="rgba(0,0,0,0)",
     stroke_width=2,
     stroke_color="#000000",
+    background_color="transparent",
     background_image=f"data:image/png;base64,{bg_png_b64}",
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
@@ -190,12 +185,13 @@ if save_contour:
 
 # Рисование зон МОП
 st.subheader("2️⃣ Нарисуйте зоны МОП (необязательно)")
-st.markdown("Нарисуйте замкнутые полигоны для зон МОП. Добавляйте по одной зоне кнопкой 'Добавить МОП'.")
+st st.markdown("Нарисуйте замкнутые полигоны для зон МОП. Добавляйте по одной зоне кнопкой 'Добавить МОП'.")
 
 holes_json = st_canvas(
     fill_color="rgba(255,0,0,0.3)",
     stroke_width=2,
     stroke_color="#ff0000",
+    background_color="transparent",
     background_image=f"data:image/png;base64,{bg_png_b64}",
     height=CANVAS_HEIGHT,
     width=CANVAS_WIDTH,
