@@ -5,6 +5,8 @@ from shapely.ops import split
 import matplotlib.pyplot as plt
 import pandas as pd
 import math
+from PIL import Image, ImageDraw
+import io
 
 # ==========================
 #   КОНФИГУРАЦИЯ И UI
@@ -48,20 +50,40 @@ st.sidebar.header("💾 Проект")
 proj_name = st.sidebar.text_input("Имя проекта (JSON)", "plan.json")
 
 # ==========================
+#   СОЗДАНИЕ СЕТКИ
+# ==========================
+
+def create_grid_image(width, height, grid_size_px):
+    image = Image.new('RGB', (width, height), '#F0F0F0')
+    draw = ImageDraw.Draw(image)
+    for x in range(0, width, grid_size_px):
+        draw.line([(x, 0), (x, height)], fill='gray', width=1)
+    for y in range(0, height, grid_size_px):
+        draw.line([(0, y), (width, y)], fill='gray', width=1)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer
+
+grid_size_px = int(grid_mm / scale)
+canvas_width, canvas_height = 800, 600
+grid_image = create_grid_image(canvas_width, canvas_height, grid_size_px)
+
+# ==========================
 #   CANVAS: ЧЕРЧЕНИЕ ПЛАНА
 # ==========================
 
 st.subheader("1️⃣ Нарисуйте план этажа")
-st.markdown("Первый полигон — внешний контур; остальные — зоны МОП. Углы выравниваются по сетке (90°).")
+st.markdown("Первый полигон — внешний контур; остальные — зоны МОП. Углы корректируются до 90° после рисования.")
 canvas_data = st_canvas(
     stroke_width=2,
     stroke_color='#000',
     fill_color='rgba(255,165,0,0.3)',
     background_color='#F0F0F0',
+    background_image=Image.open(grid_image),
     drawing_mode='polygon',
     key='canvas2',
-    width=800,
-    height=600,
+    width=canvas_width,
+    height=canvas_height,
     initial_drawing=None
 )
 
@@ -84,18 +106,22 @@ def snap(pt, prev_pt=None):
             x = px  # Вертикальная линия
     return (x, y)
 
+def enforce_90_degrees(pts):
+    corrected = [pts[0]]
+    for i in range(1, len(pts)):
+        prev_pt = corrected[-1]
+        curr_pt = snap(pts[i], prev_pt)
+        corrected.append(curr_pt)
+    return corrected
+
 raw = canvas_data.json_data or {}
 objs = raw.get('objects', [])
 polys = []
-prev_pt = None
 for o in objs:
     if o.get('type') == 'polygon':
-        pts = []
-        for p in o['points']:
-            pt = snap((p['x'], p['y']), prev_pt)
-            pts.append(pt)
-            prev_pt = pt
+        pts = [(p['x'], p['y']) for p in o['points']]
         if len(pts) >= 3:
+            pts = enforce_90_degrees(pts)
             try:
                 poly = Polygon(pts)
                 if not poly.is_valid:
@@ -122,12 +148,24 @@ with st.spinner("Обработка полигонов..."):
             st.error(f"Ошибка при вычитании зон МОП: {str(e)}")
             st.stop()
 
-# Отображение размеров этажа
+# Отображение размеров этажа на холсте
 minx, miny, maxx, maxy = floor.bounds
 w_mm = (maxx - minx) * scale
 h_mm = (maxy - miny) * scale
 area_m2 = floor.area * scale**2 / 1e6
 st.info(f"Контур: {w_mm:.0f}×{h_mm:.0f} мм, площадь {area_m2:.2f} м²")
+
+# Отрисовка контура с размерами
+fig, ax = plt.subplots(figsize=(8, 6))
+x, y = floor.exterior.xy
+ax.fill([xi * scale for xi in x], [yi * scale for yi in y], color='rgba(255,165,0,0.3)', edgecolor='black')
+cx, cy = floor.representative_point().xy
+ax.text(cx * scale, cy * scale, f"{w_mm:.0f}×{h_mm:.0f} мм\n{area_m2:.2f} м²",
+        ha='center', va='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
+ax.set_aspect('equal')
+ax.axis('off')
+st.pyplot(fig)
+plt.close(fig)
 
 # ==========================
 #   ФУНКЦИИ НАРЕЗКИ
@@ -229,7 +267,7 @@ if st.button("Сгенерировать квартирографию"):
             poly = avail.pop(0)
             apt, rem = split_poly(poly, px2)
             placements.append((t, apt))
-            if rem and rem.area > 0.01 * px2:  # Игнорируем слишком малые остатки
+            if rem and rem.area > 0.01 * px2:
                 avail.append(rem)
 
         floor_placements[fl] = placements
