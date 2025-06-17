@@ -1,289 +1,193 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
+from shapely.geometry import Polygon, LineString
+from shapely.ops import split
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-import shapely.geometry as geom
-import numpy as np
-from matplotlib.colors import ListedColormap
-from shapely.validation import make_valid
+import pandas as pd
+import json, math
 
-# Константы
-GRID_MIN = 10
-GRID_MAX = 500
-SCALE_MIN = 1
-SCALE_MAX = 10
-DEFAULT_TYPES = ['Студии', '1С', '2С', '3С', '4С']
-DEFAULT_AREAS = {
-    'Студии': (20.0, 35.0),
-    '1С': (35.0, 50.0),
-    '2С': (50.0, 70.0),
-    '3С': (70.0, 90.0),
-    '4С': (90.0, 120.0)
-}
-COLORS = ListedColormap(['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']).colors
+# ==========================
+#   КОНФИГУРАЦИЯ И UI
+# ==========================
 
-def validate_polygon(poly):
-    """Валидация и исправление полигона"""
-    if not poly.is_valid:
-        poly = make_valid(poly)
-    if poly.geom_type == 'MultiPolygon':
-        poly = max(poly.geoms, key=lambda x: x.area)
-    return poly
+st.set_page_config(layout="wide", page_title="Квартирография")
+st.title("📐 Квартирография Architect Edition")
 
-def calculate_apartment_counts(total_area, percents, area_ranges):
-    """Расчет количества квартир каждого типа"""
-    avg_areas = {t: (rng[0] + rng[1]) / 2 for t, rng in area_ranges.items()}
-    target_areas = {t: total_area * p / 100 for t, p in percents.items()}
-    counts = {t: max(1, int(round(target_areas[t] / avg_areas[t]))) for t in percents}
-    return counts
+# — Sidebar: Общие настройки —
+st.sidebar.header("🏢 Параметры здания и сетки")
+floors = st.sidebar.number_input("Этажей в доме", min_value=1, value=10)
+scale = st.sidebar.number_input("мм на пиксель", min_value=0.1, value=10.0, step=0.1)
+show_snap = st.sidebar.checkbox("Привязка к сетке (snap-to-grid)", value=True)
+grid_mm = st.sidebar.number_input("Шаг сетки (мм)", min_value=5, value=100, step=5)
 
-def distribute_per_floor(counts, floors):
-    """Распределение квартир по этажам"""
-    per_floor = {f: {} for f in range(floors)}
-    for t, cnt in counts.items():
-        q, r = divmod(cnt, floors)
-        for i in range(floors):
-            per_floor[i][t] = q + (1 if i < r else 0)
-    return per_floor
+# — Sidebar: Квартирография —
+st.sidebar.header("🏠 Распределение квартир")
+types = ['Студия','1С','2С','3С','4С']
+percentages = {}
+cols = st.sidebar.columns(2)
+for i, t in enumerate(types):
+    with cols[i % 2]:
+        percentages[t] = st.slider(f"% {t}", 0, 100, 100//len(types), key=f"pct_{t}")
+if sum(percentages.values()) != 100:
+    st.sidebar.error(f"Сумма % должна быть 100% (сейчас {sum(percentages.values())}%)")
+    st.stop()
 
-def split_rectangles(free_rects, obstacle):
-    """Разделение прямоугольников вокруг препятствия"""
-    new_free = []
-    for (x, y, w, h) in free_rects:
-        rect = geom.box(x, y, x + w, y + h)
-        if rect.intersects(obstacle):
-            diff = rect.difference(obstacle)
-            if diff.is_empty:
-                continue
-            for sub in getattr(diff, 'geoms', [diff]):
-                bx, by, bx2, by2 = sub.bounds
-                new_w, new_h = bx2 - bx, by2 - by
-                if new_w > 1 and new_h > 1:  # Минимальный размер
-                    new_free.append((bx, by, new_w, new_h))
+st.sidebar.subheader("Диапазоны площадей (м²)")
+areas = {}
+for t in types:
+    mn, mx = st.sidebar.slider(f"{t}", 1.0, 200.0, (20.0,50.0), key=f"area_{t}")
+    areas[t] = (mn, mx)
+
+# — Sidebar: Проект —
+st.sidebar.header("💾 Проект")
+proj_name = st.sidebar.text_input("Имя проекта (JSON)", "plan.json")
+
+# ==========================
+#   CANVAS: ЧЕРЧЕНИЕ ПЛАНА
+# ==========================
+
+st.subheader("1️⃣ Нарисуйте план этажа")
+st.markdown("Первый полигон — внешний контур; остальные — зоны МОП.")
+canvas_data = st_canvas(
+    stroke_width=2,
+    stroke_color='#000',
+    fill_color='rgba(255,165,0,0.3)',
+    background_color='#F0F0F0',
+    drawing_mode='polygon',
+    key='canvas',
+    width=800, height=600,
+    grid_color='#DDD', grid_spacing=int(grid_mm/scale)
+)
+# Экспорт/Импорт проекта
+if canvas_data.json_data:
+    js = json.dumps(canvas_data.json_data)
+    st.sidebar.download_button("💾 Экспорт JSON", js, file_name=proj_name, mime="application/json")
+uploaded = st.sidebar.file_uploader("📂 Импорт JSON", type=['json'])
+if uploaded:
+    initial = json.load(uploaded)
+    canvas_data = st_canvas(
+        stroke_width=2, stroke_color='#000', fill_color='rgba(255,165,0,0.3)',
+        background_color='#F0F0F0', drawing_mode='polygon', key='canvas2',
+        width=800, height=600, initial_drawing=initial,
+        grid_color='#DDD', grid_spacing=int(grid_mm/scale)
+    )
+
+# ==========================
+#   ПОЛИГОН ЭТАЖА + МОП
+# ==========================
+
+def snap(pt):
+    x,y = pt
+    if not show_snap: return (x,y)
+    g = grid_mm/scale
+    return (round(x/g)*g, round(y/g)*g)
+
+raw = canvas_data.json_data or {}
+objs = raw.get('objects', [])
+polys = []
+for o in objs:
+    if o.get('type') == 'polygon':
+        pts = [snap((p['x'],p['y'])) for p in o['points']]
+        if len(pts) >= 3: polys.append(Polygon(pts))
+if not polys:
+    st.error("Нарисуйте внешний контур!"); st.stop()
+floor = polys[0]
+for hole in polys[1:]:
+    floor = floor.difference(hole)
+# Отображение размеров
+minx,miny,maxx,maxy = floor.bounds
+w_mm = (maxx-minx)*scale; h_mm = (maxy-miny)*scale
+area_m2 = floor.area * scale**2 / 1e6
+st.info(f"Контур: {w_mm:.0f}×{h_mm:.0f} мм, площадь {area_m2:.2f} м²")
+
+# ==========================
+#   ФУНКЦИИ НАРЕЗКИ
+# ==========================
+
+def split_poly(poly, target_px2, tol=1e-2):
+    # Главное: бинарный поиск по главной оси MRR
+    mrr = poly.minimum_rotated_rectangle
+    coords = list(mrr.exterior.coords)
+    max_len = 0
+    for i in range(len(coords)-1):
+        x1,y1 = coords[i]; x2,y2 = coords[i+1]
+        d = math.hypot(x2-x1, y2-y1)
+        if d > max_len:
+            max_len = d; major = ((x1,y1),(x2,y2))
+    (x1,y1),(x2,y2) = major; ux, uy = (x2-x1)/max_len, (y2-y1)/max_len
+    projs = [ux*x + uy*y for x,y in poly.exterior.coords]
+    low, high = min(projs), max(projs)
+
+    def make_cut(offset):
+        mx,my = ux*offset, uy*offset; vx,vy = -uy,ux
+        minx,miny,maxx,maxy = poly.bounds
+        diag = math.hypot(maxx-minx, maxy-miny)*2
+        return LineString([(mx+vx*diag, my+vy*diag),(mx-vx*diag, my-vy*diag)])
+
+    for _ in range(30):
+        mid = (low+high)/2; parts = split(poly, make_cut(mid))
+        if len(parts) < 2:
+            low = mid; continue
+        # Выбираем ту часть, чей центр ближе к low
+        areas_list = []
+        for part in parts:
+            cx,cy = part.representative_point().coords[0]
+            proj = ux*cx + uy*cy
+            areas_list.append((proj, part))
+        smaller = min(areas_list, key=lambda x: x[0])[1]; a = smaller.area
+        if a > target_px2*(1+tol): high = mid
+        elif a < target_px2*(1-tol): low = mid
         else:
-            new_free.append((x, y, w, h))
-    return new_free
+            rem = [p for p in parts if not p.equals(smaller)]
+            return smaller, (rem[0] if rem else None)
 
-def layout_floor(perimeter_poly, mop_polys, apt_list, area_ranges, scale):
-    """Размещение квартир на этаже"""
-    # Конвертация в метры
-    scale_m = scale / 1000  # px to meters
-    
-    # Начальное свободное пространство
-    free_rects = [perimeter_poly.bounds]
-    
-    # Удаление МОП
-    for mop in mop_polys:
-        free_rects = split_rectangles(free_rects, mop)
-    
-    placements = []
-    remaining_apts = apt_list.copy()
-    
-    while remaining_apts and free_rects:
-        free_rects.sort(key=lambda r: r[2] * r[3], reverse=True)
-        x, y, w_px, h_px = free_rects.pop(0)
-        
-        # Конвертация в метры
-        w_m = w_px * scale_m
-        h_m = h_px * scale_m
-        
-        # Находим лучшую квартиру для этого пространства
-        best_fit = None
-        best_idx = None
-        best_area_diff = float('inf')
-        
-        for idx, t in enumerate(remaining_apts):
-            min_a, max_a = area_ranges[t]
-            target_a = (min_a + max_a) / 2
-            
-            # Пробуем горизонтальную и вертикальную ориентацию
-            for orientation in ['h', 'v']:
-                if orientation == 'h':
-                    apt_w = min(w_m, np.sqrt(target_a * (w_m / h_m)))
-                    apt_h = target_a / apt_w
-                else:
-                    apt_h = min(h_m, np.sqrt(target_a * (h_m / w_m)))
-                    apt_w = target_a / apt_h
-                
-                if apt_w <= w_m and apt_h <= h_m:
-                    area_diff = abs((apt_w * apt_h) - target_a)
-                    if area_diff < best_area_diff:
-                        best_fit = (t, x, y, apt_w / scale_m, apt_h / scale_m)
-                        best_idx = idx
-                        best_area_diff = area_diff
-        
-        if best_fit:
-            t, x, y, apt_w_px, apt_h_px = best_fit
-            placements.append((t, x, y, apt_w_px, apt_h_px))
-            del remaining_apts[best_idx]
-            
-            # Добавляем оставшееся пространство
-            right = (x + apt_w_px, y, w_px - apt_w_px, h_px)
-            top = (x, y + apt_h_px, apt_w_px, h_px - apt_h_px)
-            
-            for rect in [right, top]:
-                if rect[2] > 10 and rect[3] > 10:  # Минимальный размер
-                    free_rects.append(rect)
-    
-    return placements
+    parts = split(poly, make_cut((low+high)/2))
+    parts = sorted(parts, key=lambda p: p.area)
+    return parts[0], (parts[1] if len(parts)>1 else None)
 
-def draw_floor_plan(ax, perimeter, mops, placements, scale, types):
-    """Отрисовка плана этажа"""
-    # Конвертация в метры
-    scale_m = scale / 1000  # px to meters
-    
-    # Рисуем периметр
-    xs, ys = perimeter.exterior.xy
-    ax.plot(xs, ys, 'k-', linewidth=2)
-    
-    # Рисуем МОПы
-    for mop in mops:
-        xs, ys = mop.exterior.xy
-        ax.fill(xs, ys, color='#aaaaaa', alpha=0.5)
-        ax.plot(xs, ys, 'k-', linewidth=1)
-    
-    # Рисуем квартиры
-    type_indices = {t: i for i, t in enumerate(types)}
-    for t, x, y, w_px, h_px in placements:
-        w_m = w_px * scale_m
-        h_m = h_px * scale_m
-        area = w_m * h_m
-        
-        color = COLORS[type_indices[t] % len(COLORS)]
-        rect = Rectangle((x, y), w_px, h_px, 
-                        facecolor=color, edgecolor='black', alpha=0.7)
-        ax.add_patch(rect)
-        
-        ax.text(x + w_px/2, y + h_px/2,
-               f"{t}\n{w_m:.1f}×{h_m:.1f} м\n{area:.1f} м²",
-               ha='center', va='center', fontsize=8, fontweight='bold')
-    
-    # Настройки отображения
-    ax.set_aspect('equal')
-    ax.invert_yaxis()
-    ax.set_title('План этажа', fontsize=12)
-    ax.grid(False)
+# ==========================
+#   РАСПРЕДЕЛЕНИЕ КВАРТИР
+# ==========================
 
-def main():
-    st.set_page_config(layout="wide")
-    st.title('📐 Планировщик квартирографии')
-    
-    # Настройки в сайдбаре
-    with st.sidebar:
-        st.title('⚙️ Настройки')
-        
-        floors = st.number_input('Число этажей', min_value=1, max_value=50, value=3, step=1)
-        grid_size_mm = st.number_input('Размер сетки (мм)', min_value=GRID_MIN, max_value=GRID_MAX, 
-                                      value=100, step=10)
-        scale_px_per_mm = st.number_input('Масштаб (px на 1 мм)', min_value=SCALE_MIN, 
-                                         max_value=SCALE_MAX, value=2, step=1)
-        
-        st.subheader('Распределение квартир')
-        percents = {}
-        cols = st.columns(2)
-        for i, t in enumerate(DEFAULT_TYPES):
-            with cols[i % 2]:
-                percents[t] = st.slider(f'{t} (%)', 0, 100, 20, key=f'p_{t}')
-        
-        sum_p = sum(percents.values())
-        if sum_p != 100:
-            st.error(f'Сумма процентов должна быть 100% (сейчас {sum_p}%)')
-        
-        st.subheader('Диапазоны площадей (м²)')
-        area_ranges = {}
-        for t in DEFAULT_TYPES:
-            min_default, max_default = DEFAULT_AREAS[t]
-            min_val = st.number_input(f'Мин {t}', min_value=5.0, value=min_default, 
-                                    step=0.5, key=f'min_{t}')
-            max_val = st.number_input(f'Макс {t}', min_value=min_val+1, value=max_default, 
-                                     step=0.5, key=f'max_{t}')
-            area_ranges[t] = (min_val, max_val)
-    
-    # Основная область - холст для рисования
-    st.subheader('Нарисуйте план этажа')
-    st.markdown("""
-    1. Нарисуйте **периметр этажа** (первый полигон)
-    2. Добавьте **МОПы** (остальные полигоны)
-    3. Нажмите кнопку генерации
-    """)
-    
-    try:
-        canvas = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",  # Оранжевый с прозрачностью
-            stroke_width=2,
-            stroke_color="#000000",
-            background_color="#f8f9fa",
-            height=600,
-            width=1000,
-            drawing_mode='polygon',
-            key="canvas",
-            update_streamlit=True,
-            display_toolbar=True,
-            grid_color="#dddddd",
-            grid_spacing=int(grid_size_mm * scale_px_per_mm),
-            grid_width=1
-        )
-    except Exception as e:
-        st.error(f"Ошибка при создании холста: {str(e)}")
-        st.stop()
-    
-    # Генерация квартирографии
-    if st.button('🏗️ Сгенерировать квартирографию', disabled=sum_p!=100):
-        data = canvas.json_data
-        if not data or 'objects' not in data or len(data['objects']) == 0:
-            st.error('Пожалуйста, нарисуйте хотя бы периметр этажа')
-            return
-        
-        try:
-            # Извлекаем полигоны
-            objs = data['objects']
-            polys = [o for o in objs if o['type'] == 'polygon']
-            
-            if not polys:
-                st.error('Не найден периметр этажа')
-                return
-            
-            # Первый полигон - периметр, остальные - МОПы
-            perimeter = validate_polygon(geom.Polygon(polys[0]['points']))
-            mops = [validate_polygon(geom.Polygon(o['points'])) for o in polys[1:]]
-            
-            # Рассчет общей площади в м²
-            area_px = perimeter.area - sum(m.area for m in mops)
-            total_area = (area_px / (scale_px_per_mm ** 2)) / 1e6  # в м²
-            
-            st.success(f'Общая полезная площадь: {total_area:.1f} м²')
-            
-            # Расчет количества квартир
-            counts = calculate_apartment_counts(total_area, percents, area_ranges)
-            per_floor = distribute_per_floor(counts, floors)
-            
-            # Отображение результатов для каждого этажа
-            for i in range(floors):
-                st.subheader(f'Этаж {i+1}')
-                apt_list = [t for t, cnt in per_floor[i].items() for _ in range(cnt)]
-                
-                if not apt_list:
-                    st.warning('Нет квартир для размещения на этом этаже')
-                    continue
-                
-                placements = layout_floor(perimeter, mops, apt_list, area_ranges, scale_px_per_mm)
-                
-                fig, ax = plt.subplots(figsize=(10, 8))
-                draw_floor_plan(ax, perimeter, mops, placements, scale_px_per_mm, DEFAULT_TYPES)
-                
-                # Легенда
-                handles = [Rectangle((0,0),1,1, color=COLORS[i]) for i in range(len(DEFAULT_TYPES))]
-                ax.legend(handles, DEFAULT_TYPES, title='Типы квартир', 
-                          loc='upper right', bbox_to_anchor=(1.15, 1))
-                
-                st.pyplot(fig)
-                
-                # Статистика по этажу
-                floor_stats = {t: apt_list.count(t) for t in set(apt_list)}
-                st.write(f"**Распределение:** {', '.join([f'{k}: {v}' for k, v in floor_stats.items()])}")
-        
-        except Exception as e:
-            st.error(f'Ошибка при обработке данных: {str(e)}')
+st.subheader("2️⃣ Подбор квартирографии по всему зданию")
+if st.button("🚀 Распределить квартиры"):
+    total_area = area_m2 * floors
+    avg_area = {t:(areas[t][0]+areas[t][1])/2 for t in types}
+    counts = {t: max(1,int(round(total_area*percentages[t]/100/avg_area[t]))) for t in types}
+    per_floor = {i:{} for i in range(floors)}
+    for t,c in counts.items():
+        q,r = divmod(c, floors)
+        for i in range(floors): per_floor[i][t] = q + (1 if i < r else 0)
 
-if __name__ == '__main__':
-    main()
+    fl = st.slider("Выберите этаж", 1, floors, 1)
+    targets = []
+    for t,n in per_floor[fl-1].items():
+        if n > 0:
+            tot_t = total_area * percentages[t] / 100
+            avg_t = tot_t / counts[t]
+            px2 = avg_t * 1e6 / scale**2
+            targets += [(t, px2)]*n
+
+    # Разметка
+    avail = [floor]; placements = []
+    for t,px2 in targets:
+        avail.sort(key=lambda p: p.area, reverse=True)
+        poly = avail.pop(0)
+        apt, rem = split_poly(poly, px2)
+        placements.append((t, apt))
+        if rem and rem.area > 0: avail.append(rem)
+
+    # Отрисовка этажа
+    fig, ax = plt.subplots(figsize=(8,6))
+    cmap = {'Студия':'#FFC107','1С':'#8BC34A','2С':'#03A9F4','3С':'#E91E63','4С':'#9C27B0'}
+    for t, poly in placements:
+        x,y = poly.exterior.xy
+        ax.fill([xi*scale for xi in x], [yi*scale for yi in y], color=cmap[t], alpha=0.7, edgecolor='black')
+    ax.set_aspect('equal'); ax.axis('off')
+    st.pyplot(fig)
+
+    # Отчет
+    df = pd.DataFrame([{'Этаж':i+1,'Тип':t,'Кол-во':per_floor[i][t]} for i in range(floors) for t in types])
+    st.subheader("3️⃣ Сводный отчет по этажам")
+    st.dataframe(df)
+    st.sidebar.download_button("📥 Скачать CSV", df.to_csv(index=False), file_name='report.csv', mime='text/csv')
