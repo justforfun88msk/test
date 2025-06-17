@@ -90,16 +90,16 @@ for t in types:
 # Заголовок и холст
 st.title('Планировщик квартирографии')
 canvas = st_canvas(
-    fill_color='transparent',
-    stroke_width=2,
-    background_color='#eeeeee',
-    update_streamlit=True,
     height=600,
     width=800,
+    background_color='#eeeeee',
+    update_streamlit=True,
     drawing_mode='polygon',
     key='canvas',
+    stroke_width=2,
+    fill_color='transparent',
     grid_color='#cccccc',
-    grid_spacing=(int(grid_size_mm * scale_px_per_mm), int(grid_size_mm * scale_px_per_mm)),
+    grid_spacing=int(grid_size_mm * scale_px_per_mm),
     grid_width=1
 )
 
