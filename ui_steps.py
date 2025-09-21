@@ -77,7 +77,7 @@ def render_step1_upload():
             keys_to_reset = [
                 'target', 'task_type', 'train_X', 'train_y', 'X_train', 'X_test',
                 'y_train', 'y_test', 'leaderboard', 'active_model_name', 'best_estimator',
-                'fitted_pipe', 'prediction_data', 'primary_metric', 'selected_features',
+                'fitted_pipe', 'evaluation_pipe', 'prediction_data', 'primary_metric', 'selected_features',
                 'available_features', 'calculator_base_data', 'dt_cols_hint'
             ]
             for key in keys_to_reset:
