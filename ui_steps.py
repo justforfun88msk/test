@@ -239,13 +239,34 @@ def render_step3_training():
 
         if st.button(f"✅ Обучить '{new_active_model}' на всех данных и перейти к анализу", type="primary"):
             with st.spinner(f"Обучение '{new_active_model}' на полном датасете..."):
-                model_instance = ml_core.get_models(task)[new_active_model]
-                preprocessor = ml_core.build_preprocessor(
-                    st.session_state.X_train, st.session_state.get('dt_cols_hint'), 
-                    use_scaler=ml_core.is_linear_model(new_active_model), handle_outliers=True
+                dt_cols_hint = st.session_state.get('dt_cols_hint')
+                use_scaler = ml_core.is_linear_model(new_active_model)
+
+                X_train = st.session_state.X_train
+                y_train = st.session_state.y_train
+
+                train_preprocessor = ml_core.build_preprocessor(
+                    X_train, dt_cols_hint,
+                    use_scaler=use_scaler, handle_outliers=True
                 )
-                st.session_state.fitted_pipe = ml_core.fit_best(preprocessor, model_instance, X, y)
-            
+                st.session_state.evaluation_pipe = ml_core.fit_best(
+                    train_preprocessor,
+                    ml_core.get_models(task)[new_active_model],
+                    X_train,
+                    y_train,
+                )
+
+                full_preprocessor = ml_core.build_preprocessor(
+                    X, dt_cols_hint,
+                    use_scaler=use_scaler, handle_outliers=True
+                )
+                st.session_state.fitted_pipe = ml_core.fit_best(
+                    full_preprocessor,
+                    ml_core.get_models(task)[new_active_model],
+                    X,
+                    y,
+                )
+
             st.success(f"Модель '{new_active_model}' обучена!")
             st.session_state.wizard_step = 4
             st.rerun()
@@ -254,11 +275,11 @@ def render_step4_analysis():
     """Отрисовывает UI для анализа модели."""
     st.header(f"Шаг 4. Анализ модели: {st.session_state.get('active_model_name', '')}")
 
-    if 'fitted_pipe' not in st.session_state:
+    if 'evaluation_pipe' not in st.session_state:
         st.warning("⚠️ Сначала обучите модель на шаге 3.")
         return
 
-    est = st.session_state.fitted_pipe
+    est = st.session_state.evaluation_pipe
     X_test = st.session_state.X_test
     y_test = st.session_state.y_test
     task = st.session_state.task_type
