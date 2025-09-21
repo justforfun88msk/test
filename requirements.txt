@@ -1,6 +1,0 @@
-streamlit
-shapely
-pandas
-matplotlib
-streamlit-drawable-canvas
-openpyxl
