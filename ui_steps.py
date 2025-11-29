@@ -545,10 +545,24 @@ def render_step3_training():
     # ✅ УЛУЧШЕНО: Показать информацию о данных
     st.info(f"📊 Обучение на **{len(X_train):,}** строках с **{len(features)}** признаками. "
             f"Тестирование на **{len(X_test):,}** строках.")
-    
+
     # Динамическое определение n_splits
     n_splits = ml_core.get_optimal_cv_splits(len(X_train))
     st.info(f"ℹ️ Для кросс-валидации будет использовано **{n_splits} folds**")
+
+    st.markdown("#### ℹ️ Доступные алгоритмы и режимы")
+    st.success(
+        "В обучении участвуют только установленные библиотеки: "
+        f"sklearn (всегда), "
+        f"XGBoost {'✅' if ml_core.XGB_AVAILABLE else '❌'}, "
+        f"LightGBM {'✅' if ml_core.LGBM_AVAILABLE else '❌'}, "
+        f"CatBoost {'✅' if ml_core.CATBOOST_AVAILABLE else '❌'}, "
+        f"Optuna {'✅' if OPTUNA_AVAILABLE else '❌'} для точной настройки."
+    )
+    st.caption(
+        "💡 Подсказка: для очень больших датасетов (>50k строк) начните с быстрого режима, "
+        "чтобы увидеть базовые метрики за минуты, а затем включайте точный режим для топ-моделей."
+    )
 
     # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Выбор режима с сохранением в session_state
     st.markdown("### ⚙️ Режим обучения")
@@ -632,7 +646,10 @@ def render_step3_training():
 
                 # CV evaluation
                 preprocessor = ml_core.build_preprocessor(
-                    X_train, dt_cols_hint, False, True, 
+                    X_train,
+                    dt_cols_hint,
+                    ml_core.is_linear_model(name),
+                    True,
                     _sid=get_session_id(),
                     text_processing=st.session_state.get('text_processing', False),
                     model_name=name,
@@ -669,13 +686,22 @@ def render_step3_training():
             text_processing = st.session_state.get('text_processing', False)
             use_log_transform = st.session_state.get('use_log_transform', False)
 
-            pre_unscaled = ml_core.build_preprocessor(
-                X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
-                _sid=get_session_id(),
-                text_processing=text_processing,
-                model_name=None,
-                use_log_transform=use_log_transform
-            )
+            preprocessors = {
+                False: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                ),
+                True: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=True, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                )
+            }
 
             results = []
             progress_bar = st.progress(0, text="Инициализация обучения...")
@@ -687,8 +713,11 @@ def render_step3_training():
             for i, (name, model) in enumerate(models.items()):
                 status_text.info(f"🤖 Обучение модели {i+1}/{len(models)}: **{name}**")
                 
+                needs_scaler = ml_core.is_linear_model(name)
+                preprocessor = preprocessors[needs_scaler]
+
                 scores, duration = ml_core.cv_evaluate(
-                    pre_unscaled, model, X_train, y_train, task,
+                    preprocessor, model, X_train, y_train, task,
                     n_splits=n_splits, shuffle=True, seed=RANDOM_SEED,
                     _sid=get_session_id(),
                     _cache_bust=i
