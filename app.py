@@ -64,7 +64,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Применяем CSS
+# Применяем CSS и фиксируем светлую тему
+st.session_state.theme_mode = "light"
 st.markdown(f"<style>{ui_config.APP_CSS}</style>", unsafe_allow_html=True)
 
 # ============ SESSION STATE ИНИЦИАЛИЗАЦИЯ ============
@@ -131,24 +132,48 @@ def clear_session():
     
     # ✅ ДОБАВЛЕНО: Явный сбор мусора
     gc.collect()
-    
+
     logger.info("Сессия очищена, память освобождена")
 
-# ============ ЗАГОЛОВОК ============
-col1, col2, col3 = st.columns([1, 3, 1])
-
-with col2:
+# ============ ЗАГОЛОВОК / HERO ============
+if st.session_state.wizard_step == 0:
     st.markdown(
-        f"""
-        <div style="text-align: center;">
-            <h1 style="margin:0; color: #101820;">Auto ML Sminex</h1>
-            <p style="color:#5f6368; font-size:0.95em; margin-top:6px;">v.025 · by Charikov</p>
+        """
+        <div class="hero">
+            <h1>Auto ML Sminex</h1>
+            <p>Загрузите данные, настройте задачу и запустите обучение в несколько шагов.</p>
         </div>
         """,
         unsafe_allow_html=True
     )
-
-st.markdown("<div class='floating-hint'>Лаконичный AutoML без лишнего шума</div>", unsafe_allow_html=True)
+    if st.button("🚀 Начать новый проект", type="primary", use_container_width=False, key="hero_cta"):
+        st.session_state.wizard_step = 1
+        st.rerun()
+    st.markdown(
+        """
+        <div class="ui-stepper" style="margin-top: 12px;">
+            <div class="step active">1. Данные</div>
+            <div class="step">2. Настройка</div>
+            <div class="step">3. Обучение</div>
+            <div class="step">4. Аналитика</div>
+            <div class="step">5. Прогноз</div>
+            <div class="step">6. Оптимизация</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    col1, col2, col3 = st.columns([1, 3, 1])
+    with col2:
+        st.markdown(
+            f"""
+            <div style="text-align: center;">
+                <h1 style="margin:0;">Auto ML Sminex</h1>
+                <p style="color:var(--muted); font-size:0.95em; margin-top:6px;">v.025 · by Charikov</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 # ============ SIDEBAR ============
 with st.sidebar:
@@ -184,7 +209,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 📋 Статус")
-    
+
     if 'train_df' in st.session_state and st.session_state.train_df is not None:
         df_shape = st.session_state.train_df.shape
         st.metric("📊 Датасет", f"{df_shape[0]:,} × {df_shape[1]}")
@@ -215,9 +240,6 @@ with st.sidebar:
         st.metric("🤖 Модель", "—")
     
     st.markdown("---")
-    
-    st.markdown("---")
-    st.markdown("<p style='color:#6e6e73;'>Минимум шума — максимум данных.</p>", unsafe_allow_html=True)
 
     if st.button("Очистить проект", use_container_width=True):
         clear_session()
