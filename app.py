@@ -148,6 +148,8 @@ with col2:
         unsafe_allow_html=True
     )
 
+st.markdown("<div class='floating-hint'>Лаконичный AutoML без лишнего шума</div>", unsafe_allow_html=True)
+
 # ============ SIDEBAR ============
 with st.sidebar:
     st.markdown("<h3 style='margin-bottom:4px;'>Навигация</h3>", unsafe_allow_html=True)
@@ -214,6 +216,9 @@ with st.sidebar:
     
     st.markdown("---")
     
+    st.markdown("---")
+    st.markdown("<p style='color:#6e6e73;'>Минимум шума — максимум данных.</p>", unsafe_allow_html=True)
+
     if st.button("Очистить проект", use_container_width=True):
         clear_session()
         st.rerun()

@@ -16,20 +16,11 @@ body {
     color: #0f1419;
 }
 
-.main .block-container {
-    width: 60vw;
-    max-width: 1100px;
-    min-width: 760px;
-    margin: 0 auto;
-    padding-top: 1rem;
-    padding-bottom: 3rem;
-}
-
-@media (max-width: 1200px) {
-    .main .block-container {
-        width: 90vw;
-        min-width: auto;
-    }
+.floating-hint {
+    text-align: center;
+    color: #6b7280;
+    margin-bottom: 18px;
+    letter-spacing: 0.01em;
 }
 
 .stButton > button {
