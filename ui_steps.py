@@ -54,120 +54,23 @@ from ml_core import LGBM_AVAILABLE, CATBOOST_AVAILABLE, XGB_AVAILABLE, OPTUNA_AV
 
 logger = logging.getLogger(__name__)
 
-
-def render_model_cards(limit=6):
-    """Анимированные карточки моделей с обновленными иконками."""
-    emoji_map = {
-        "LinearRegression": "📈",
-        "Ridge": "🛰️",
-        "Lasso": "✂️",
-        "LogisticRegression": "🧭",
-        "RandomForestClassifier": "🌲",
-        "RandomForestRegressor": "🌲",
-        "ExtraTreesClassifier": "🎲",
-        "ExtraTreesRegressor": "🎲",
-        "HistGradientBoostingClassifier": "🚦",
-        "HistGradientBoostingRegressor": "🚦",
-        "XGBClassifier": "🚀",
-        "XGBRegressor": "🚀",
-        "LGBMClassifier": "⚡",
-        "LGBMRegressor": "⚡",
-        "CatBoostClassifier": "🐱",
-        "CatBoostRegressor": "🐱",
-    }
-
-    items = list(MODEL_DESCRIPTIONS.items())[:limit]
-    cards_html = ["<div class='ui-grid'>"]
-    for name, desc in items:
-        icon = emoji_map.get(name, "✨")
-        cards_html.append(
-            f"<div class='ui-card'><div class='avatar-icon'>{icon}</div>"
-            f"<h4 style='margin:6px 0;'> {name}</h4>"
-            f"<p style='color:var(--muted); margin-bottom:0;'>{desc}</p>"
-            f"<div class='ui-chip' style='margin-top:8px;'>Hover · Press · Neon</div></div>"
-        )
-    cards_html.append("</div>")
-    st.markdown("\n".join(cards_html), unsafe_allow_html=True)
-
-
-def render_skeleton_block(title: str, rows: int = 3):
-    lines = "".join(
-        ["<div class='skeleton-row' style='width:90%;'></div>", "<div class='skeleton-row' style='width:65%;'></div>"]
-    )
-    rows_html = "".join(["<div class='skeleton-row'></div>" for _ in range(rows)])
-    st.markdown(
-        f"""
-        <div class='skeleton-card'>
-            <div style='display:flex; justify-content:space-between; align-items:center;'>
-                <div class='avatar-icon'>⏳</div>
-                <div style='flex:1; margin-left:12px;'>
-                    <div class='skeleton-row' style='width:60%;'></div>
-                </div>
-            </div>
-            {lines}
-            {rows_html}
-            <div class='skeleton-row' style='width:40%;'></div>
-            <div style='color:var(--muted); margin-top:8px;'>{title}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_analytics_stack():
-    st.markdown(
-        """
-        <div class="analytics-stack">
-            <div class="item">
-                <div class="avatar-icon">📡</div>
-                <div><strong>Live-трекинг</strong><br/><span style="color:var(--muted);">Метрики обновляются при каждом фолде</span></div>
-            </div>
-            <div class="item">
-                <div class="avatar-icon">🧩</div>
-                <div><strong>Feature stack</strong><br/><span style="color:var(--muted);">Важность, корреляции, дистрибуции</span></div>
-            </div>
-            <div class="item">
-                <div class="avatar-icon">🎛️</div>
-                <div><strong>Визуальная матрица</strong><br/><span style="color:var(--muted);">Confusion/ROC с неоновыми подсветками</span></div>
-            </div>
-            <div class="item">
-                <div class="avatar-icon">🛰️</div>
-                <div><strong>Deploy ready</strong><br/><span style="color:var(--muted);">Пайплайн совместим с st. компонентами</span></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 # =========================================================
 # STEP 0: HOME
 # =========================================================
 
 def render_step0_home():
     """Главная страница."""
-    st.title("Новая дизайн-система · Neon / Soft Dark")
+    st.title("Готовы к быстрой автоматизации")
     st.markdown(
         """
-        Интерактивные hover/press состояния, variable fonts и стек компонентов (карточки, чипы, stepper, adaptive grid).
-        Обновлённые иконки и иллюстрации готовы к работе с текущими st. компонентами.
+        Минимальный интерфейс, только ключевые шаги: загрузите файл, выберите цель, запустите обучение. 
+        Тихий режим без лишних подсказок — всё нужное видно сразу.
         """
     )
 
-    cta_col, info_col = st.columns([1.2, 1])
-    with cta_col:
-        if st.button("🚀 Начать с загрузки данных", type="primary", use_container_width=True):
-            st.session_state.wizard_step = 1
-            st.rerun()
-        st.caption("Карточки моделей, стек аналитики и CTA совместимы с базовыми streamlit элементами.")
-    with info_col:
-        st.markdown("<div class='ui-chip'>💾 CSV/XLSX · 200 МБ · Soft preloading</div>", unsafe_allow_html=True)
-        st.markdown("<div class='ui-chip'>🛰️ Variable fonts · Neon palette</div>", unsafe_allow_html=True)
-
-    st.markdown("### 🃏 Карточки моделей (hover / press)")
-    render_model_cards()
-
-    st.markdown("### 📡 Стек аналитики")
-    render_analytics_stack()
+    if st.button("🚀 Начать новый проект", type="primary", use_container_width=True):
+        st.session_state.wizard_step = 1
+        st.rerun()
 
 # =========================================================
 # STEP 1: UPLOAD
@@ -197,9 +100,6 @@ def render_step1_upload():
         help="Максимальный размер: 200 МБ. Большие файлы будут автоматически сэмплированы."
     )
 
-    if up is None:
-        render_skeleton_block("Ожидаем файл для предпросмотра", rows=4)
-
     data_loaded = False
     if up is not None:
         try:
@@ -214,9 +114,6 @@ def render_step1_upload():
             
             t0 = time.time()
             
-            loading_placeholder = st.empty()
-            loading_placeholder.markdown("<div class='skeleton-card'><div class='skeleton-row' style='width:70%'></div><div class='skeleton-row' style='width:50%'></div><div class='skeleton-row'></div></div>", unsafe_allow_html=True)
-
             # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Кэширование определения кодировки
             file_hash = None
             
@@ -286,7 +183,6 @@ def render_step1_upload():
                 f"✅ Загружено: **{df.shape[0]:,}** строк × **{df.shape[1]}** столбцов "
                 f"({human_time_ms(st.session_state.timer_info['load_ms'])})"
             )
-            loading_placeholder.empty()
             
             # ✅ УЛУЧШЕНО: Показать основную статистику
             col1, col2, col3, col4 = st.columns(4)
@@ -640,8 +536,6 @@ def render_step3_training():
         f"CatBoost {'✅' if ml_core.CATBOOST_AVAILABLE else '❌'}, "
         f"Optuna {'✅' if OPTUNA_AVAILABLE else '❌'} для точной настройки."
     )
-    st.markdown("### 🃏 Карточки моделей")
-    render_model_cards(limit=4)
     st.caption(
         "💡 Подсказка: для очень больших датасетов (>50k строк) начните с быстрого режима, "
         "чтобы увидеть базовые метрики за минуты, а затем включайте точный режим для топ-моделей."
@@ -679,9 +573,7 @@ def render_step3_training():
         accurate_mode = False
         st.session_state.accurate_mode = False
 
-    preloader_placeholder = st.empty()
     if st.button("▶️ Запустить обучение", type="primary", use_container_width=True):
-        preloader_placeholder.markdown("<div class='skeleton-card'><div class='skeleton-row' style='width:50%'></div><div class='skeleton-row'></div><div class='skeleton-row' style='width:70%'></div><div style='color:var(--muted);'>Готовим пайплайн и сплит</div></div>", unsafe_allow_html=True)
         if accurate_mode:
             st.info("⏳ Запущен режим точной настройки с Optuna. Это может занять 30-120 минут...\n"
                    "💡 **Совет:** Optuna автоматически остановится при отсутствии улучшений (early stopping)")
@@ -817,7 +709,6 @@ def render_step3_training():
             status_text.empty()
             progress_bar.empty()
 
-        preloader_placeholder.empty()
         enforce_min_duration(t0_all, min_seconds=2.0)
         
         # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Лидербоард с правильной обработкой NaN
@@ -850,7 +741,6 @@ def render_step3_training():
 
         st.success(f"✅ Обучение завершено за {human_time_ms((time.time() - t0_all) * 1000)}! "
                   f"Лучшая модель по метрике '{sort_metric}': **{best_model_name}**")
-        preloader_placeholder.empty()
         st.rerun()
 
     # Показ лидерборда если он есть
@@ -955,9 +845,6 @@ def render_step4_analysis():
             st.session_state.wizard_step = 3
             st.rerun()
         return
-
-    st.markdown("### 📡 Стек аналитики")
-    render_analytics_stack()
 
     if 'X_test' not in st.session_state or 'y_test' not in st.session_state:
         st.error("❌ Данные теста не найдены! Вернитесь на шаг 2.")

@@ -64,15 +64,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Применяем CSS и состояние темы
-if "theme_mode" not in st.session_state:
-    st.session_state.theme_mode = "dark"
-
+# Применяем CSS
 st.markdown(f"<style>{ui_config.APP_CSS}</style>", unsafe_allow_html=True)
-st.markdown(
-    f"<script>window.parent.document.documentElement.setAttribute('data-theme','{st.session_state.theme_mode}');</script>",
-    unsafe_allow_html=True,
-)
 
 # ============ SESSION STATE ИНИЦИАЛИЗАЦИЯ ============
 if "wizard_step" not in st.session_state:
@@ -138,53 +131,24 @@ def clear_session():
     
     # ✅ ДОБАВЛЕНО: Явный сбор мусора
     gc.collect()
-
+    
     logger.info("Сессия очищена, память освобождена")
 
-# ============ ЗАГОЛОВОК / HERO ============
-if st.session_state.wizard_step == 0:
+# ============ ЗАГОЛОВОК ============
+col1, col2, col3 = st.columns([1, 3, 1])
+
+with col2:
     st.markdown(
-        """
-        <div class="hero">
-            <div class="ui-chip">⚡ Auto ML · Neon</div>
-            <h1>Обучайте модели без трения</h1>
-            <p>Новый стек компонентов: variable fonts, неоновая палитра, интерактивные hover/press состояния и анимированные карточки. Готово для быстрой загрузки данных и запуска обучения.</p>
-            <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                <span class="ui-chip">🪐 Soft-dark · Neon hover · Variable fonts</span>
-            </div>
+        f"""
+        <div style="text-align: center;">
+            <h1 style="margin:0; color: #101820;">Auto ML Sminex</h1>
+            <p style="color:#5f6368; font-size:0.95em; margin-top:6px;">v.025 · by Charikov</p>
         </div>
         """,
         unsafe_allow_html=True
     )
-    if st.button("🚀 Начать новый проект", type="primary", use_container_width=False, key="hero_cta"):
-        st.session_state.wizard_step = 1
-        st.rerun()
-    st.markdown(
-        """
-        <div class="ui-stepper" style="margin-top: 12px;">
-            <div class="step active">1. Данные</div>
-            <div class="step">2. Настройка</div>
-            <div class="step">3. Обучение</div>
-            <div class="step">4. Аналитика</div>
-            <div class="step">5. Прогноз</div>
-            <div class="step">6. Оптимизация</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    col1, col2, col3 = st.columns([1, 3, 1])
-    with col2:
-        st.markdown(
-            f"""
-            <div style="text-align: center;">
-                <h1 style="margin:0;">Auto ML Sminex</h1>
-                <p style="color:var(--muted); font-size:0.95em; margin-top:6px;">v.025 · by Charikov</p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    st.markdown("<div class='floating-hint'>Обновлённая дизайн-система: neon / soft-dark + variable fonts</div>", unsafe_allow_html=True)
+
+st.markdown("<div class='floating-hint'>Лаконичный AutoML без лишнего шума</div>", unsafe_allow_html=True)
 
 # ============ SIDEBAR ============
 with st.sidebar:
@@ -219,18 +183,8 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    theme_toggle = st.toggle("🌗 Light / Dark", value=st.session_state.theme_mode == "light", help="Переключение CSS variables")
-    new_theme = "light" if theme_toggle else "dark"
-    if new_theme != st.session_state.theme_mode:
-        st.session_state.theme_mode = new_theme
-        st.markdown(
-            f"<script>window.parent.document.documentElement.setAttribute('data-theme','{new_theme}');</script>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
     st.markdown("### 📋 Статус")
-
+    
     if 'train_df' in st.session_state and st.session_state.train_df is not None:
         df_shape = st.session_state.train_df.shape
         st.metric("📊 Датасет", f"{df_shape[0]:,} × {df_shape[1]}")
