@@ -1183,19 +1183,10 @@ def render_step5_predict():
 
 def render_step6_calculator():
     """Калькулятор оптимизации параметров."""
-    st.header("⚙️ Шаг 6. Калькулятор оптимизации 'Что, если?'")
-    
+    st.header("⚙️ Шаг 6. Калькулятор оптимизации")
+
     st.markdown("""
-    Используйте этот калькулятор, чтобы найти оптимальные значения параметров для достижения целевого значения.
-    
-    **Как это работает:**
-    1. Выберите базовую строку из обучающих данных
-    2. Укажите диапазоны для числовых признаков
-    3. Выберите категориальные признаки для изменения
-    4. Запустите оптимизацию
-    5. Получите оптимальные параметры
-    
-    💡 **Совет:** Используется алгоритм differential evolution для поиска глобального оптимума.
+    Минимальный набор полей: выберите цель, базовую строку и только те признаки, которые готовы менять.
     """)
 
     if 'fitted_pipe' not in st.session_state:
@@ -1209,8 +1200,8 @@ def render_step6_calculator():
     X_train = st.session_state.X_train
     task = st.session_state.task_type
 
-    st.subheader("1️⃣ Выберите базовую строку для анализа")
-    st.markdown("Это отправная точка для оптимизации. Выберите типичный пример из ваших данных.")
+    st.subheader("1️⃣ Базовая точка")
+    st.markdown("Выберите строку, от которой будем отталкиваться.")
     
     idx = st.number_input(
         "Номер строки в обучающих данных",
@@ -1229,71 +1220,90 @@ def render_step6_calculator():
         except Exception:
             pass
 
-    st.subheader("2️⃣ Настройте параметры для оптимизации")
+    st.subheader("2️⃣ Что оптимизируем")
+
+    if task == 'regression':
+        objective = st.radio(
+            "Цель",
+            ["Максимизировать предсказание", "Минимизировать предсказание"],
+            horizontal=True,
+        )
+        target_class = None
+    else:
+        classes = getattr(est, "classes_", None)
+        target_class = st.selectbox(
+            "Класс, вероятность которого повышаем",
+            classes.tolist() if classes is not None else ["1"],
+        )
+        objective = "Максимизировать предсказание"
+
+    maximize = objective.startswith("Максимизировать")
+
+    st.divider()
+    st.subheader("3️⃣ Какие признаки менять")
     
     all_features = base_row.columns.tolist()
     num_features = [f for f in all_features if pd.api.types.is_numeric_dtype(X_train[f])]
     cat_features = [f for f in all_features if not pd.api.types.is_numeric_dtype(X_train[f])]
 
     st.markdown("**Числовые признаки**")
-    st.caption("Укажите диапазоны значений для поиска оптимума")
-    
+    default_nums = num_features[: min(4, len(num_features))]
+    num_to_tune = st.multiselect(
+        "Выберите 1-5 числовых признаков",
+        num_features,
+        default=default_nums,
+    )
+
     bounds = {}
-    for f in num_features:
+    for f in num_to_tune:
         col_data = X_train[f].dropna()
         if len(col_data) == 0:
             continue
-        min_val, max_val = float(col_data.min()), float(col_data.max())
+        q05, q95 = col_data.quantile([0.05, 0.95])
+        min_val = float(q05)
+        max_val = float(q95)
         if min_val == max_val:
-            max_val = min_val + 1  # Avoid slider error
-        
-        # ✅ УЛУЧШЕНО: Показать текущее значение
+            max_val = min_val + 1
+
         current_val = float(base_row[f].iloc[0])
         bounds[f] = st.slider(
-            f"Диапазон для '{f}' (текущее: {current_val:.2f})", 
-            min_val, max_val, (min_val, max_val),
-            help=f"Минимум: {min_val:.2f}, Максимум: {max_val:.2f}"
+            f"{f} (текущее: {current_val:.2f})",
+            min_val,
+            max_val,
+            (min_val, max_val),
+            help=f"Диапазон предложен по 5–95 перцентилям"
         )
 
     st.markdown("**Категориальные признаки**")
-    st.caption("Отметьте признаки, которые можно изменять")
-    
+    cat_to_tune = st.multiselect(
+        "Какие категориальные признаки менять",
+        cat_features,
+    )
+
     cat_choices = {}
-    for f in cat_features:
+    for f in cat_to_tune:
         options = sorted([str(x) for x in X_train[f].dropna().unique()])
         if len(options) == 0:
             continue
-        if st.checkbox(f"Разрешить изменение '{f}'", key=f"check_{f}"):
-            cat_choices[f] = options
+        cat_choices[f] = options
 
     # ✅ ДОБАВЛЕНО: Проверка что есть что оптимизировать
     if not bounds and not cat_choices:
-        st.warning("⚠️ Выберите хотя бы один признак для оптимизации (числовой или категориальный)")
+        st.warning("⚠️ Добавьте хотя бы один признак для оптимизации")
         return
 
-    st.subheader("3️⃣ Параметры оптимизации")
-    
+    st.subheader("4️⃣ Параметры поиска")
+
     col1, col2 = st.columns(2)
     with col1:
-        if task == 'regression':
-            objective = st.radio(
-                "Цель", 
-                ["Максимизировать", "Минимизировать"], 
-                horizontal=True,
-                help="Что делать с предсказанным значением"
-            )
-        else:
-            objective = "Максимизировать"
-            st.info("Цель: Максимизировать вероятность предсказания")
-    
-    with col2:
         popsize = st.slider(
-            "Размер популяции", 
+            "Размер популяции",
             5, 50, 15,
             help="Больше = лучше результат, но медленнее"
         )
+    with col2:
         maxiter = st.slider(
-            "Макс. итерации", 
+            "Макс. итерации",
             10, 200, 50,
             help="Больше = лучше результат, но медленнее"
         )
@@ -1315,19 +1325,22 @@ def render_step6_calculator():
                 for i, f in enumerate(optimizable_cat):
                     choice_idx = int(x[offset + i])
                     row_to_predict[f] = cat_choices[f][choice_idx]
-                
+
                 try:
                     if task == 'regression':
                         score = est.predict(row_to_predict)[0]
                     else:
-                        if hasattr(est, "predict_proba"):
+                        if hasattr(est, "predict_proba") and target_class is not None:
+                            class_index = list(est.classes_).index(target_class)
+                            score = est.predict_proba(row_to_predict)[0][class_index]
+                        elif hasattr(est, "predict_proba"):
                             score = est.predict_proba(row_to_predict).max()
                         else:
                             score = float(est.predict(row_to_predict)[0])
                 except Exception:
-                    return float('inf') if objective == "Минимизировать" else float('-inf')
+                    return float('inf') if not maximize else float('-inf')
                 
-                return -score if objective == "Максимизировать" else score
+                return -score if maximize else score
 
             if not optimizer_bounds:
                 st.warning("⚠️ Выберите хотя бы один параметр для оптимизации")
@@ -1366,7 +1379,7 @@ def render_step6_calculator():
                     base_pred = est.predict(base_row)[0]
                 except Exception:
                     base_pred = 0
-                opt_pred = -result.fun if objective == "Максимизировать" else result.fun
+                opt_pred = -result.fun if maximize else result.fun
                 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Базовое значение", f"{base_pred:.4f}")

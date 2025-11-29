@@ -328,15 +328,3 @@ except Exception as e:
 
 # ============ FOOTER ============
 st.divider()
-
-# ✅ УЛУЧШЕНО: Более информативный footer
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.caption(
-        f"🤖 **Sminex ML {ui_config.APP_VERSION}** | "
-        f"Powered by scikit-learn {sklearn.__version__}, XGBoost, LightGBM, CatBoost, Optuna | "
-        f"Параллелизм: {ml_core.N_JOBS} jobs | "
-        f"Made with ❤️"
-    )
-with col2:
-    st.caption(f"Сессия: {st.session_state.session_id[:12]}")
