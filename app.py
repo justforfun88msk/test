@@ -218,7 +218,11 @@ with st.sidebar:
         st.metric("🔍 Тип", "—")
     
     if 'active_model_name' in st.session_state:
-        model_display = st.session_state.active_model_name[:12] + "..." if len(st.session_state.active_model_name) > 12 else st.session_state.active_model_name
+        model_display = (
+            st.session_state.active_model_name[:12] + "..."
+            if len(st.session_state.active_model_name) > 12
+            else st.session_state.active_model_name
+        )
         st.metric("🤖 Модель", model_display)
     else:
         st.metric("🤖 Модель", "—")
