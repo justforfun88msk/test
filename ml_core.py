@@ -230,27 +230,40 @@ class DateTimeExpander(BaseEstimator, TransformerMixin):
         for c in cols_to_check:
             if c not in X.columns:
                 continue
-            
+
+            handled = False
+
             # ✅ ДОБАВЛЕНО: Проверка Unix timestamps
             if pd.api.types.is_numeric_dtype(X[c]):
                 try:
                     vals = X[c].dropna()
                     if len(vals) > 0:
                         min_val, max_val = vals.min(), vals.max()
-                        # Unix timestamp: от 1970 до 2100
-                        if 0 <= min_val <= 4102444800 and 0 <= max_val <= 4102444800:
+
+                        # ✅ ИСПРАВЛЕНО: Реалистичная проверка Unix timestamp
+                        # - Значения должны быть целочисленными/псевдо-целыми
+                        # - Диапазон в секундах с 1990 по 2100 (исключаем мелкие величины типа длины/веса)
+                        looks_integer = np.allclose(vals, np.round(vals), rtol=0, atol=1e-3)
+                        realistic_range = 6.3e8 <= min_val <= 4.1e9 and max_val <= 4.1e9
+
+                        if looks_integer and realistic_range:
                             try:
-                                parsed = pd.to_datetime(X[c], unit='s', errors='coerce')
+                                parsed = pd.to_datetime(vals, unit='s', errors='coerce')
                                 if parsed.notna().mean() >= self.min_success:
                                     self.dt_cols_.append(c)
                                     logger.info(f"Столбец {c} определен как Unix timestamp")
+                                    handled = True
                                     continue
                             except Exception:
                                 pass
                 except Exception:
                     pass
-            
-            # ✅ ИСПРАВЛЕНО: Обычный parsing
+
+                # ✅ ИСПРАВЛЕНО: не пытаться парсить произвольные числовые столбцы как даты
+                if not handled:
+                    continue
+
+            # ✅ ИСПРАВЛЕНО: Обычный parsing (для нечисловых столбцов)
             parsed, ok = self._safe_parse_datetime(X[c], self.min_success)
             if ok:
                 self.dt_cols_.append(c)

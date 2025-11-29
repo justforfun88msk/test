@@ -41,10 +41,11 @@ import logging
 # Импорты из проекта
 import ml_core
 from utils import (
-    detect_csv_sep, detect_file_encoding, human_time_ms, enforce_min_duration, 
+    detect_csv_sep, detect_file_encoding, human_time_ms, enforce_min_duration,
     download_button, get_session_id, smart_sample_large_file, get_file_size_mb,
     sanitize_column_names, remove_duplicate_columns, validate_data_types,
-    check_and_remove_duplicates, get_file_hash, estimate_memory_usage, optimize_dtypes
+    check_and_remove_duplicates, get_file_hash, estimate_memory_usage, optimize_dtypes,
+    format_eta
 )
 from ui_config import MODEL_DESCRIPTIONS, get_model_tags, RANDOM_SEED, MAX_DATASET_SIZE, SAMPLE_SIZE_FOR_LARGE_DATASETS
 
@@ -59,33 +60,14 @@ logger = logging.getLogger(__name__)
 
 def render_step0_home():
     """Главная страница."""
-    st.title("🤖 Добро пожаловать в Sminex ML!")
-    st.markdown("""
-    **Sminex ML – это профессиональный инструмент для автоматизации машинного обучения.**  
-    Он позволяет:  
-    * **📁 Загружать данные** в формате CSV/XLSX (до 200 МБ).  
-    * **🎯 Автоматически определять** тип задачи (классификация или регрессия).  
-    * **🤖 Обучать и сравнивать** десятки моделей машинного обучения с параллелизмом.  
-    * **📊 Анализировать** детали и качество модели с визуализациями.  
-    * **🔮 Делать прогнозы** на новые данные с валидацией типов.  
-    * **⚙️ Использовать калькулятор "Что, если?"** для поиска оптимальных параметров.
-    """)
-    
-    st.info("✨ **Новые возможности в v0.25:**\n"
-            "- ⚡ Параллельное обучение моделей (до 8x быстрее)\n"
-            "- 🎯 Stratified sampling для несбалансированных данных\n"
-            "- 🧹 Автоматическое удаление дубликатов строк\n"
-            "- 💾 Оптимизация использования памяти\n"
-            "- 📊 Больше метрик для multiclass задач")
-    
-    st.subheader("🚀 Как начать?")
-    st.markdown("""
-    1. Нажмите **"📁 1. Загрузка данных"** в боковом меню.  
-    2. Загрузите ваш файл с данными (CSV или Excel).  
-    3. Следуйте инструкциям на каждом этапе wizard'а.
-    4. Получите обученную модель и прогнозы!
-    """)
-    
+    st.title("Готовы к быстрой автоматизации")
+    st.markdown(
+        """
+        Минимальный интерфейс, только ключевые шаги: загрузите файл, выберите цель, запустите обучение. 
+        Тихий режим без лишних подсказок — всё нужное видно сразу.
+        """
+    )
+
     if st.button("🚀 Начать новый проект", type="primary", use_container_width=True):
         st.session_state.wizard_step = 1
         st.rerun()
@@ -96,17 +78,12 @@ def render_step0_home():
 
 def render_step1_upload():
     """Загрузка и парсинг данных."""
-    st.header("📁 Шаг 1. Загрузка данных")
-    st.markdown("""
-    Загрузите ваш файл с данными в формате CSV или Excel. Данные должны быть в виде таблицы, где:  
-    * **Строки** – это отдельные объекты (например, клиенты, товары, события).  
-    * **Столбцы** – это характеристики (признаки) этих объектов и целевая переменная.
-    
-    ⚡ **Рекомендации:**
-    - Минимум 100 строк для надежных результатов
-    - Избегайте файлов с более чем 10,000 столбцов
-    - Проверьте что целевая переменная не имеет пропусков
-    """)
+    st.header("📁 Шаг 1. Загрузка")
+    st.markdown(
+        """
+        Поддерживаются CSV и Excel до 200 МБ. Выберите файл — система аккуратно определит разделитель, кодировку и очистит шум.
+        """
+    )
     
     # Опции для CSV
     csv_separator = st.selectbox(
@@ -545,10 +522,24 @@ def render_step3_training():
     # ✅ УЛУЧШЕНО: Показать информацию о данных
     st.info(f"📊 Обучение на **{len(X_train):,}** строках с **{len(features)}** признаками. "
             f"Тестирование на **{len(X_test):,}** строках.")
-    
+
     # Динамическое определение n_splits
     n_splits = ml_core.get_optimal_cv_splits(len(X_train))
     st.info(f"ℹ️ Для кросс-валидации будет использовано **{n_splits} folds**")
+
+    st.markdown("#### ℹ️ Доступные алгоритмы и режимы")
+    st.success(
+        "В обучении участвуют только установленные библиотеки: "
+        f"sklearn (всегда), "
+        f"XGBoost {'✅' if ml_core.XGB_AVAILABLE else '❌'}, "
+        f"LightGBM {'✅' if ml_core.LGBM_AVAILABLE else '❌'}, "
+        f"CatBoost {'✅' if ml_core.CATBOOST_AVAILABLE else '❌'}, "
+        f"Optuna {'✅' if OPTUNA_AVAILABLE else '❌'} для точной настройки."
+    )
+    st.caption(
+        "💡 Подсказка: для очень больших датасетов (>50k строк) начните с быстрого режима, "
+        "чтобы увидеть базовые метрики за минуты, а затем включайте точный режим для топ-моделей."
+    )
 
     # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Выбор режима с сохранением в session_state
     st.markdown("### ⚙️ Режим обучения")
@@ -632,7 +623,10 @@ def render_step3_training():
 
                 # CV evaluation
                 preprocessor = ml_core.build_preprocessor(
-                    X_train, dt_cols_hint, False, True, 
+                    X_train,
+                    dt_cols_hint,
+                    ml_core.is_linear_model(name),
+                    True,
                     _sid=get_session_id(),
                     text_processing=st.session_state.get('text_processing', False),
                     model_name=name,
@@ -654,7 +648,8 @@ def render_step3_training():
                     **scores
                 }
                 results.append(row)
-                progress_bar.progress((i + 1) / len(models_to_tune), text=f"✅ Готово: {name}")
+                eta = format_eta(t0_all, len(models_to_tune), i + 1)
+                progress_bar.progress((i + 1) / len(models_to_tune), text=f"✅ {name} • {eta}")
 
             status_text.empty()
             progress_bar.empty()
@@ -669,13 +664,22 @@ def render_step3_training():
             text_processing = st.session_state.get('text_processing', False)
             use_log_transform = st.session_state.get('use_log_transform', False)
 
-            pre_unscaled = ml_core.build_preprocessor(
-                X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
-                _sid=get_session_id(),
-                text_processing=text_processing,
-                model_name=None,
-                use_log_transform=use_log_transform
-            )
+            preprocessors = {
+                False: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                ),
+                True: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=True, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                )
+            }
 
             results = []
             progress_bar = st.progress(0, text="Инициализация обучения...")
@@ -687,8 +691,11 @@ def render_step3_training():
             for i, (name, model) in enumerate(models.items()):
                 status_text.info(f"🤖 Обучение модели {i+1}/{len(models)}: **{name}**")
                 
+                needs_scaler = ml_core.is_linear_model(name)
+                preprocessor = preprocessors[needs_scaler]
+
                 scores, duration = ml_core.cv_evaluate(
-                    pre_unscaled, model, X_train, y_train, task,
+                    preprocessor, model, X_train, y_train, task,
                     n_splits=n_splits, shuffle=True, seed=RANDOM_SEED,
                     _sid=get_session_id(),
                     _cache_bust=i
@@ -696,7 +703,8 @@ def render_step3_training():
                 
                 row = {"model": name, "cv_time": human_time_ms(duration), **scores}
                 results.append(row)
-                progress_bar.progress((i + 1) / len(models), text=f"✅ Готово: {name}")
+                eta = format_eta(t0_all, len(models), i + 1)
+                progress_bar.progress((i + 1) / len(models), text=f"✅ {name} • {eta}")
 
             status_text.empty()
             progress_bar.empty()
@@ -737,7 +745,7 @@ def render_step3_training():
 
     # Показ лидерборда если он есть
     if 'leaderboard' in st.session_state:
-        st.subheader("📊 Лидербоард моделей")
+        st.subheader("📊 Результаты")
         
         # ✅ УЛУЧШЕНО: Подсветка лучшей модели
         leaderboard_display = st.session_state.leaderboard.copy()
@@ -745,16 +753,18 @@ def render_step3_training():
         # Стиль для лучшей модели
         def highlight_best(row):
             if row['model'] == st.session_state.active_model_name:
-                return ['background-color: #d4edda'] * len(row)
+                return ['background-color: rgba(79,141,243,0.12)'] * len(row)
             return [''] * len(row)
-        
+
+        st.markdown("<div class='dashboard-card'>", unsafe_allow_html=True)
         st.dataframe(
             leaderboard_display.style.apply(highlight_best, axis=1).format(precision=4),
             use_container_width=True
         )
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.subheader("🎯 Выбор активной модели для анализа")
-        st.markdown("Выберите модель для детального анализа и финального обучения на всех данных.")
+        st.subheader("🎯 Активная модель")
+        st.markdown("Выберите модель для финальной сборки.")
         
         model_names = st.session_state.leaderboard['model'].tolist()
         active_model_idx = model_names.index(st.session_state.active_model_name) if st.session_state.active_model_name in model_names else 0
@@ -1173,19 +1183,10 @@ def render_step5_predict():
 
 def render_step6_calculator():
     """Калькулятор оптимизации параметров."""
-    st.header("⚙️ Шаг 6. Калькулятор оптимизации 'Что, если?'")
-    
+    st.header("⚙️ Шаг 6. Калькулятор оптимизации")
+
     st.markdown("""
-    Используйте этот калькулятор, чтобы найти оптимальные значения параметров для достижения целевого значения.
-    
-    **Как это работает:**
-    1. Выберите базовую строку из обучающих данных
-    2. Укажите диапазоны для числовых признаков
-    3. Выберите категориальные признаки для изменения
-    4. Запустите оптимизацию
-    5. Получите оптимальные параметры
-    
-    💡 **Совет:** Используется алгоритм differential evolution для поиска глобального оптимума.
+    Минимальный набор полей: выберите цель, базовую строку и только те признаки, которые готовы менять.
     """)
 
     if 'fitted_pipe' not in st.session_state:
@@ -1199,8 +1200,8 @@ def render_step6_calculator():
     X_train = st.session_state.X_train
     task = st.session_state.task_type
 
-    st.subheader("1️⃣ Выберите базовую строку для анализа")
-    st.markdown("Это отправная точка для оптимизации. Выберите типичный пример из ваших данных.")
+    st.subheader("1️⃣ Базовая точка")
+    st.markdown("Выберите строку, от которой будем отталкиваться.")
     
     idx = st.number_input(
         "Номер строки в обучающих данных",
@@ -1219,71 +1220,90 @@ def render_step6_calculator():
         except Exception:
             pass
 
-    st.subheader("2️⃣ Настройте параметры для оптимизации")
+    st.subheader("2️⃣ Что оптимизируем")
+
+    if task == 'regression':
+        objective = st.radio(
+            "Цель",
+            ["Максимизировать предсказание", "Минимизировать предсказание"],
+            horizontal=True,
+        )
+        target_class = None
+    else:
+        classes = getattr(est, "classes_", None)
+        target_class = st.selectbox(
+            "Класс, вероятность которого повышаем",
+            classes.tolist() if classes is not None else ["1"],
+        )
+        objective = "Максимизировать предсказание"
+
+    maximize = objective.startswith("Максимизировать")
+
+    st.divider()
+    st.subheader("3️⃣ Какие признаки менять")
     
     all_features = base_row.columns.tolist()
     num_features = [f for f in all_features if pd.api.types.is_numeric_dtype(X_train[f])]
     cat_features = [f for f in all_features if not pd.api.types.is_numeric_dtype(X_train[f])]
 
     st.markdown("**Числовые признаки**")
-    st.caption("Укажите диапазоны значений для поиска оптимума")
-    
+    default_nums = num_features[: min(4, len(num_features))]
+    num_to_tune = st.multiselect(
+        "Выберите 1-5 числовых признаков",
+        num_features,
+        default=default_nums,
+    )
+
     bounds = {}
-    for f in num_features:
+    for f in num_to_tune:
         col_data = X_train[f].dropna()
         if len(col_data) == 0:
             continue
-        min_val, max_val = float(col_data.min()), float(col_data.max())
+        q05, q95 = col_data.quantile([0.05, 0.95])
+        min_val = float(q05)
+        max_val = float(q95)
         if min_val == max_val:
-            max_val = min_val + 1  # Avoid slider error
-        
-        # ✅ УЛУЧШЕНО: Показать текущее значение
+            max_val = min_val + 1
+
         current_val = float(base_row[f].iloc[0])
         bounds[f] = st.slider(
-            f"Диапазон для '{f}' (текущее: {current_val:.2f})", 
-            min_val, max_val, (min_val, max_val),
-            help=f"Минимум: {min_val:.2f}, Максимум: {max_val:.2f}"
+            f"{f} (текущее: {current_val:.2f})",
+            min_val,
+            max_val,
+            (min_val, max_val),
+            help=f"Диапазон предложен по 5–95 перцентилям"
         )
 
     st.markdown("**Категориальные признаки**")
-    st.caption("Отметьте признаки, которые можно изменять")
-    
+    cat_to_tune = st.multiselect(
+        "Какие категориальные признаки менять",
+        cat_features,
+    )
+
     cat_choices = {}
-    for f in cat_features:
+    for f in cat_to_tune:
         options = sorted([str(x) for x in X_train[f].dropna().unique()])
         if len(options) == 0:
             continue
-        if st.checkbox(f"Разрешить изменение '{f}'", key=f"check_{f}"):
-            cat_choices[f] = options
+        cat_choices[f] = options
 
     # ✅ ДОБАВЛЕНО: Проверка что есть что оптимизировать
     if not bounds and not cat_choices:
-        st.warning("⚠️ Выберите хотя бы один признак для оптимизации (числовой или категориальный)")
+        st.warning("⚠️ Добавьте хотя бы один признак для оптимизации")
         return
 
-    st.subheader("3️⃣ Параметры оптимизации")
-    
+    st.subheader("4️⃣ Параметры поиска")
+
     col1, col2 = st.columns(2)
     with col1:
-        if task == 'regression':
-            objective = st.radio(
-                "Цель", 
-                ["Максимизировать", "Минимизировать"], 
-                horizontal=True,
-                help="Что делать с предсказанным значением"
-            )
-        else:
-            objective = "Максимизировать"
-            st.info("Цель: Максимизировать вероятность предсказания")
-    
-    with col2:
         popsize = st.slider(
-            "Размер популяции", 
+            "Размер популяции",
             5, 50, 15,
             help="Больше = лучше результат, но медленнее"
         )
+    with col2:
         maxiter = st.slider(
-            "Макс. итерации", 
+            "Макс. итерации",
             10, 200, 50,
             help="Больше = лучше результат, но медленнее"
         )
@@ -1305,33 +1325,38 @@ def render_step6_calculator():
                 for i, f in enumerate(optimizable_cat):
                     choice_idx = int(x[offset + i])
                     row_to_predict[f] = cat_choices[f][choice_idx]
-                
+
                 try:
                     if task == 'regression':
                         score = est.predict(row_to_predict)[0]
                     else:
-                        if hasattr(est, "predict_proba"):
+                        if hasattr(est, "predict_proba") and target_class is not None:
+                            class_index = list(est.classes_).index(target_class)
+                            score = est.predict_proba(row_to_predict)[0][class_index]
+                        elif hasattr(est, "predict_proba"):
                             score = est.predict_proba(row_to_predict).max()
                         else:
                             score = float(est.predict(row_to_predict)[0])
                 except Exception:
-                    return float('inf') if objective == "Минимизировать" else float('-inf')
+                    return float('inf') if not maximize else float('-inf')
                 
-                return -score if objective == "Максимизировать" else score
+                return -score if maximize else score
 
             if not optimizer_bounds:
                 st.warning("⚠️ Выберите хотя бы один параметр для оптимизации")
             else:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                start_opt = time.time()
                 
                 # ✅ УЛУЧШЕНО: Callback для отображения прогресса
                 iteration = [0]
                 def callback(xk, convergence):
                     iteration[0] += 1
                     progress = min(100, int((iteration[0] / maxiter) * 100))
-                    progress_bar.progress(progress)
-                    status_text.text(f"Итерация {iteration[0]}/{maxiter}")
+                    eta = format_eta(start_opt, maxiter, iteration[0])
+                    progress_bar.progress(progress, text=f"Итерация {iteration[0]}/{maxiter} • {eta}")
+                    status_text.text(f"Балансировка параметров... {eta}")
                 
                 result = differential_evolution(
                     objective_function,
@@ -1354,7 +1379,7 @@ def render_step6_calculator():
                     base_pred = est.predict(base_row)[0]
                 except Exception:
                     base_pred = 0
-                opt_pred = -result.fun if objective == "Максимизировать" else result.fun
+                opt_pred = -result.fun if maximize else result.fun
                 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Базовое значение", f"{base_pred:.4f}")

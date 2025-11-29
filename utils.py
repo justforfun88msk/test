@@ -69,6 +69,20 @@ def human_time_ms(ms: float) -> str:
     s = s - m * 60
     return f"{m}m {int(s)}s"
 
+
+def format_eta(start_time: float, total_steps: int, completed_steps: int) -> str:
+    """Оценка оставшегося времени для прогресса."""
+    if completed_steps <= 0 or total_steps <= 0:
+        return ""
+    elapsed = time.time() - start_time
+    avg = elapsed / completed_steps
+    remaining = max(0.0, avg * (total_steps - completed_steps))
+    if remaining < 60:
+        return f"≈{int(remaining)}s"
+    minutes = int(remaining // 60)
+    seconds = int(remaining - minutes * 60)
+    return f"≈{minutes}m {seconds:02d}s"
+
 # ============ СЕССИЯ ============
 def get_session_id() -> str:
     """Уникальный ID сессии."""
