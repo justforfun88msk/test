@@ -41,10 +41,11 @@ import logging
 # Импорты из проекта
 import ml_core
 from utils import (
-    detect_csv_sep, detect_file_encoding, human_time_ms, enforce_min_duration, 
+    detect_csv_sep, detect_file_encoding, human_time_ms, enforce_min_duration,
     download_button, get_session_id, smart_sample_large_file, get_file_size_mb,
     sanitize_column_names, remove_duplicate_columns, validate_data_types,
-    check_and_remove_duplicates, get_file_hash, estimate_memory_usage, optimize_dtypes
+    check_and_remove_duplicates, get_file_hash, estimate_memory_usage, optimize_dtypes,
+    format_eta
 )
 from ui_config import MODEL_DESCRIPTIONS, get_model_tags, RANDOM_SEED, MAX_DATASET_SIZE, SAMPLE_SIZE_FOR_LARGE_DATASETS
 
@@ -59,33 +60,14 @@ logger = logging.getLogger(__name__)
 
 def render_step0_home():
     """Главная страница."""
-    st.title("🤖 Добро пожаловать в Sminex ML!")
-    st.markdown("""
-    **Sminex ML – это профессиональный инструмент для автоматизации машинного обучения.**  
-    Он позволяет:  
-    * **📁 Загружать данные** в формате CSV/XLSX (до 200 МБ).  
-    * **🎯 Автоматически определять** тип задачи (классификация или регрессия).  
-    * **🤖 Обучать и сравнивать** десятки моделей машинного обучения с параллелизмом.  
-    * **📊 Анализировать** детали и качество модели с визуализациями.  
-    * **🔮 Делать прогнозы** на новые данные с валидацией типов.  
-    * **⚙️ Использовать калькулятор "Что, если?"** для поиска оптимальных параметров.
-    """)
-    
-    st.info("✨ **Новые возможности в v0.25:**\n"
-            "- ⚡ Параллельное обучение моделей (до 8x быстрее)\n"
-            "- 🎯 Stratified sampling для несбалансированных данных\n"
-            "- 🧹 Автоматическое удаление дубликатов строк\n"
-            "- 💾 Оптимизация использования памяти\n"
-            "- 📊 Больше метрик для multiclass задач")
-    
-    st.subheader("🚀 Как начать?")
-    st.markdown("""
-    1. Нажмите **"📁 1. Загрузка данных"** в боковом меню.  
-    2. Загрузите ваш файл с данными (CSV или Excel).  
-    3. Следуйте инструкциям на каждом этапе wizard'а.
-    4. Получите обученную модель и прогнозы!
-    """)
-    
+    st.title("Готовы к быстрой автоматизации")
+    st.markdown(
+        """
+        Минимальный интерфейс, только ключевые шаги: загрузите файл, выберите цель, запустите обучение. 
+        Тихий режим без лишних подсказок — всё нужное видно сразу.
+        """
+    )
+
     if st.button("🚀 Начать новый проект", type="primary", use_container_width=True):
         st.session_state.wizard_step = 1
         st.rerun()
@@ -96,17 +78,12 @@ def render_step0_home():
 
 def render_step1_upload():
     """Загрузка и парсинг данных."""
-    st.header("📁 Шаг 1. Загрузка данных")
-    st.markdown("""
-    Загрузите ваш файл с данными в формате CSV или Excel. Данные должны быть в виде таблицы, где:  
-    * **Строки** – это отдельные объекты (например, клиенты, товары, события).  
-    * **Столбцы** – это характеристики (признаки) этих объектов и целевая переменная.
-    
-    ⚡ **Рекомендации:**
-    - Минимум 100 строк для надежных результатов
-    - Избегайте файлов с более чем 10,000 столбцов
-    - Проверьте что целевая переменная не имеет пропусков
-    """)
+    st.header("📁 Шаг 1. Загрузка")
+    st.markdown(
+        """
+        Поддерживаются CSV и Excel до 200 МБ. Выберите файл — система аккуратно определит разделитель, кодировку и очистит шум.
+        """
+    )
     
     # Опции для CSV
     csv_separator = st.selectbox(
@@ -545,10 +522,24 @@ def render_step3_training():
     # ✅ УЛУЧШЕНО: Показать информацию о данных
     st.info(f"📊 Обучение на **{len(X_train):,}** строках с **{len(features)}** признаками. "
             f"Тестирование на **{len(X_test):,}** строках.")
-    
+
     # Динамическое определение n_splits
     n_splits = ml_core.get_optimal_cv_splits(len(X_train))
     st.info(f"ℹ️ Для кросс-валидации будет использовано **{n_splits} folds**")
+
+    st.markdown("#### ℹ️ Доступные алгоритмы и режимы")
+    st.success(
+        "В обучении участвуют только установленные библиотеки: "
+        f"sklearn (всегда), "
+        f"XGBoost {'✅' if ml_core.XGB_AVAILABLE else '❌'}, "
+        f"LightGBM {'✅' if ml_core.LGBM_AVAILABLE else '❌'}, "
+        f"CatBoost {'✅' if ml_core.CATBOOST_AVAILABLE else '❌'}, "
+        f"Optuna {'✅' if OPTUNA_AVAILABLE else '❌'} для точной настройки."
+    )
+    st.caption(
+        "💡 Подсказка: для очень больших датасетов (>50k строк) начните с быстрого режима, "
+        "чтобы увидеть базовые метрики за минуты, а затем включайте точный режим для топ-моделей."
+    )
 
     # ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Выбор режима с сохранением в session_state
     st.markdown("### ⚙️ Режим обучения")
@@ -632,7 +623,10 @@ def render_step3_training():
 
                 # CV evaluation
                 preprocessor = ml_core.build_preprocessor(
-                    X_train, dt_cols_hint, False, True, 
+                    X_train,
+                    dt_cols_hint,
+                    ml_core.is_linear_model(name),
+                    True,
                     _sid=get_session_id(),
                     text_processing=st.session_state.get('text_processing', False),
                     model_name=name,
@@ -654,7 +648,8 @@ def render_step3_training():
                     **scores
                 }
                 results.append(row)
-                progress_bar.progress((i + 1) / len(models_to_tune), text=f"✅ Готово: {name}")
+                eta = format_eta(t0_all, len(models_to_tune), i + 1)
+                progress_bar.progress((i + 1) / len(models_to_tune), text=f"✅ {name} • {eta}")
 
             status_text.empty()
             progress_bar.empty()
@@ -669,13 +664,22 @@ def render_step3_training():
             text_processing = st.session_state.get('text_processing', False)
             use_log_transform = st.session_state.get('use_log_transform', False)
 
-            pre_unscaled = ml_core.build_preprocessor(
-                X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
-                _sid=get_session_id(),
-                text_processing=text_processing,
-                model_name=None,
-                use_log_transform=use_log_transform
-            )
+            preprocessors = {
+                False: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=False, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                ),
+                True: ml_core.build_preprocessor(
+                    X_train, dt_cols_hint, use_scaler=True, handle_outliers=True,
+                    _sid=get_session_id(),
+                    text_processing=text_processing,
+                    model_name=None,
+                    use_log_transform=use_log_transform
+                )
+            }
 
             results = []
             progress_bar = st.progress(0, text="Инициализация обучения...")
@@ -687,8 +691,11 @@ def render_step3_training():
             for i, (name, model) in enumerate(models.items()):
                 status_text.info(f"🤖 Обучение модели {i+1}/{len(models)}: **{name}**")
                 
+                needs_scaler = ml_core.is_linear_model(name)
+                preprocessor = preprocessors[needs_scaler]
+
                 scores, duration = ml_core.cv_evaluate(
-                    pre_unscaled, model, X_train, y_train, task,
+                    preprocessor, model, X_train, y_train, task,
                     n_splits=n_splits, shuffle=True, seed=RANDOM_SEED,
                     _sid=get_session_id(),
                     _cache_bust=i
@@ -696,7 +703,8 @@ def render_step3_training():
                 
                 row = {"model": name, "cv_time": human_time_ms(duration), **scores}
                 results.append(row)
-                progress_bar.progress((i + 1) / len(models), text=f"✅ Готово: {name}")
+                eta = format_eta(t0_all, len(models), i + 1)
+                progress_bar.progress((i + 1) / len(models), text=f"✅ {name} • {eta}")
 
             status_text.empty()
             progress_bar.empty()
@@ -737,7 +745,7 @@ def render_step3_training():
 
     # Показ лидерборда если он есть
     if 'leaderboard' in st.session_state:
-        st.subheader("📊 Лидербоард моделей")
+        st.subheader("📊 Результаты")
         
         # ✅ УЛУЧШЕНО: Подсветка лучшей модели
         leaderboard_display = st.session_state.leaderboard.copy()
@@ -745,16 +753,18 @@ def render_step3_training():
         # Стиль для лучшей модели
         def highlight_best(row):
             if row['model'] == st.session_state.active_model_name:
-                return ['background-color: #d4edda'] * len(row)
+                return ['background-color: rgba(79,141,243,0.12)'] * len(row)
             return [''] * len(row)
-        
+
+        st.markdown("<div class='dashboard-card'>", unsafe_allow_html=True)
         st.dataframe(
             leaderboard_display.style.apply(highlight_best, axis=1).format(precision=4),
             use_container_width=True
         )
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.subheader("🎯 Выбор активной модели для анализа")
-        st.markdown("Выберите модель для детального анализа и финального обучения на всех данных.")
+        st.subheader("🎯 Активная модель")
+        st.markdown("Выберите модель для финальной сборки.")
         
         model_names = st.session_state.leaderboard['model'].tolist()
         active_model_idx = model_names.index(st.session_state.active_model_name) if st.session_state.active_model_name in model_names else 0
@@ -1324,14 +1334,16 @@ def render_step6_calculator():
             else:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                start_opt = time.time()
                 
                 # ✅ УЛУЧШЕНО: Callback для отображения прогресса
                 iteration = [0]
                 def callback(xk, convergence):
                     iteration[0] += 1
                     progress = min(100, int((iteration[0] / maxiter) * 100))
-                    progress_bar.progress(progress)
-                    status_text.text(f"Итерация {iteration[0]}/{maxiter}")
+                    eta = format_eta(start_opt, maxiter, iteration[0])
+                    progress_bar.progress(progress, text=f"Итерация {iteration[0]}/{maxiter} • {eta}")
+                    status_text.text(f"Балансировка параметров... {eta}")
                 
                 result = differential_evolution(
                     objective_function,
