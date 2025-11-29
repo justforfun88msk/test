@@ -1,11 +1,4 @@
-# app.py - Sminex AutoML v0.25 ULTIMATE - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
-# ✅ ВСЕ ИСПРАВЛЕНИЯ КРИТИЧЕСКИХ, СРЕДНИХ И НИЗКИХ ПРОБЛЕМ:
-# - Лучшая обработка ошибок с подробными сообщениями
-# - Улучшенное логирование с ротацией файлов
-# - Надежная навигация с валидацией состояний
-# - Memory cleanup с явным удалением больших объектов
-# - Информативные метрики и статус-бар
-# - Подсказки и советы для пользователей
+# app.py - Auto ML Sminex v0.25 by Charikov
 
 import streamlit as st
 import sklearn
@@ -65,9 +58,9 @@ warnings.filterwarnings("ignore")
 
 # ============ STREAMLIT КОНФИГ ============
 st.set_page_config(
-    page_title="Sminex ML ULTIMATE",
+    page_title="Auto ML Sminex v.025 by Charikov",
     layout="wide",
-    page_icon="🤖",
+    page_icon="⚡",
     initial_sidebar_state="expanded"
 )
 
@@ -142,61 +135,55 @@ def clear_session():
     logger.info("Сессия очищена, память освобождена")
 
 # ============ ЗАГОЛОВОК ============
-col1, col2, col3 = st.columns([1, 4, 1])
+col1, col2, col3 = st.columns([1, 3, 1])
 
 with col2:
     st.markdown(
         f"""
         <div style="text-align: center;">
-            <h1 style="margin:0; color: #007aff;">🤖 Sminex ML ULTIMATE</h1>
-            <p style="color:#666; font-size:0.9em; margin-top:5px;">
-                Профессиональная AutoML платформа | {ui_config.APP_VERSION}
-            </p>
+            <h1 style="margin:0; color: #101820;">Auto ML Sminex</h1>
+            <p style="color:#5f6368; font-size:0.95em; margin-top:6px;">v.025 · by Charikov</p>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-st.caption("🚀 Загрузите данные → Настройте задачу → Обучите модели → Анализируйте → Оптимизируйте → Прогнозируйте")
-st.divider()
+st.markdown("<div class='floating-hint'>Лаконичный AutoML без лишнего шума</div>", unsafe_allow_html=True)
 
 # ============ SIDEBAR ============
 with st.sidebar:
-    st.title("📍 Навигация")
-    st.caption(f"Сессия: {st.session_state.session_id[:8]}...")
-    st.markdown("---")
-    
+    st.markdown("<h3 style='margin-bottom:4px;'>Навигация</h3>", unsafe_allow_html=True)
+
     steps = {
         "🏠 Главная": 0,
-        "📁 1. Загрузка данных": 1,
-        "🎯 2. Настройка задачи": 2,
-        "🤖 3. Обучение моделей": 3,
-        "📊 4. Анализ модели": 4,
-        "🔮 5. Прогнозирование": 5,
+        "📁 1. Загрузка": 1,
+        "🎯 2. Настройка": 2,
+        "🤖 3. Обучение": 3,
+        "📊 4. Аналитика": 4,
+        "🔮 5. Прогноз": 5,
         "⚙️ 6. Оптимизация": 6,
     }
-    
+
     max_unlocked = get_max_unlocked_step()
-    
+
     for step_name, step_num in steps.items():
         is_disabled = step_num > max_unlocked and step_num > 0
         is_current = step_num == st.session_state.wizard_step
-        
-        # ✅ УЛУЧШЕНО: Визуальное выделение текущего шага
+
         button_type = "primary" if is_current else "secondary"
-        
+
         if st.button(
-            step_name, 
-            key=f"sidebar_{step_num}", 
-            use_container_width=True, 
+            step_name,
+            key=f"sidebar_{step_num}",
+            use_container_width=True,
             disabled=is_disabled,
             type=button_type if not is_disabled else "secondary"
         ):
             st.session_state.wizard_step = step_num
             st.rerun()
-    
+
     st.markdown("---")
-    st.markdown("### 📋 Статус проекта")
+    st.markdown("### 📋 Статус")
     
     if 'train_df' in st.session_state and st.session_state.train_df is not None:
         df_shape = st.session_state.train_df.shape
@@ -229,49 +216,10 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # ✅ УЛУЧШЕНО: Информация о системе
-    with st.expander("💻 Информация о системе"):
-        st.caption(f"**CPU ядер:** {ml_core.N_JOBS + 1}")
-        st.caption(f"**Параллелизм:** {ml_core.N_JOBS} jobs")
-        st.caption(f"**Python:** {sys.version.split()[0]}")
-        st.caption(f"**Streamlit:** {st.__version__}")
-    
-    # Информация о доступности моделей
-    with st.expander("📦 Доступные библиотеки"):
-        st.caption("**Базовые:**")
-        st.caption("• sklearn, pandas, numpy")
-        
-        if ml_core.XGB_AVAILABLE:
-            st.caption("✅ **XGBoost**")
-        else:
-            st.caption("❌ XGBoost")
-        
-        if ml_core.LGBM_AVAILABLE:
-            st.caption("✅ **LightGBM**")
-        else:
-            st.caption("❌ LightGBM")
-        
-        if ml_core.CATBOOST_AVAILABLE:
-            st.caption("✅ **CatBoost**")
-        else:
-            st.caption("❌ CatBoost")
-        
-        if ml_core.OPTUNA_AVAILABLE:
-            st.caption("✅ **Optuna** (точная настройка)")
-        else:
-            st.caption("❌ Optuna")
-    
     st.markdown("---")
-    
-    # ✅ ДОБАВЛЕНО: Случайный совет
-    if st.button("💡 Показать совет", use_container_width=True):
-        st.info(get_random_tip())
-    
-    st.markdown("---")
-    st.caption(f"**v** {ui_config.APP_VERSION}")
-    st.caption(f"**sklearn** {sklearn.__version__}")
-    
-    if st.button("🗑️ Очистить проект", use_container_width=True):
+    st.markdown("<p style='color:#6e6e73;'>Минимум шума — максимум данных.</p>", unsafe_allow_html=True)
+
+    if st.button("Очистить проект", use_container_width=True):
         clear_session()
         st.rerun()
 
